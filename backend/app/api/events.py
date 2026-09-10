@@ -1,10 +1,9 @@
 from fastapi import APIRouter
 
 from app.schemas.event import EventRecord
-from app.services.event_store import EventStore
+from app.services.runtime import event_store
 
 router = APIRouter(prefix="/events", tags=["events"])
-event_store = EventStore()
 
 
 @router.get("", response_model=list[EventRecord])
