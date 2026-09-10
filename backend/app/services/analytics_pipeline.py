@@ -52,9 +52,6 @@ class AnalyticsPipeline:
                 ]
                 self.last_drone_detections = self.drone_detector.detect(frame, aerial_candidates=aerial_candidates)
             except Exception as exc:
-                # Do not permanently disable the specialist detector. Model
-                # downloads and GPU initialization can fail transiently, and
-                # the next scheduled scan should retry automatically.
                 self.last_drone_detections = []
                 now = __import__("time").time()
                 if now - self._last_drone_error_log > 15:
@@ -62,12 +59,13 @@ class AnalyticsPipeline:
                     self._last_drone_error_log = now
 
         annotated = frame.copy()
+        # General YOLO owns ground/object labels. Aerial labels are intentionally
+        # suppressed here because the specialist model is the authority for
+        # aircraft/drone/helicopter classification. This prevents a generic
+        # COCO "airplane" result from leaking into the operator display.
+        aerial_labels = {"airplane", "aircraft", "helicopter"}
         for d in detections:
-            # When AeroYOLO has positively identified an overlapping drone,
-            # don't also display the misleading general-YOLO "airplane" label.
-            if d.label.lower() in {"airplane", "aircraft", "helicopter"} and any(
-                DroneDetector._iou(d.bbox, drone.bbox) >= 0.15 for drone in self.last_drone_detections
-            ):
+            if d.label.lower() in aerial_labels:
                 continue
             x1, y1, x2, y2 = map(int, d.bbox)
             cv2.rectangle(annotated, (x1, y1), (x2, y2), (255, 255, 255), 2)
