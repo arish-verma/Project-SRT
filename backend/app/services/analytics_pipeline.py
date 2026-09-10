@@ -29,6 +29,7 @@ class AnalyticsPipeline:
         self.enabled = True
         self.drone_enabled = True
         self.last_drone_detections: list[Detection] = []
+        self._last_drone_error_log = 0.0
 
     def process(self, camera_id: str, packet: Any) -> tuple[list[Detection], list[Track]]:
         frame = packet.frame
@@ -46,10 +47,15 @@ class AnalyticsPipeline:
         if self.drone_enabled and packet.frame_index % self.drone_scan_interval == 0:
             try:
                 self.last_drone_detections = self.drone_detector.detect(frame)
-            except Exception:
-                # Specialist model failure must not disable the core CCTV pipeline.
-                logger.exception("Drone analytics unavailable for camera %s", camera_id)
-                self.drone_enabled = False
+            except Exception as exc:
+                # Do not permanently disable the specialist detector. Model
+                # downloads and GPU initialization can fail transiently, and
+                # the next scheduled scan should retry automatically.
+                self.last_drone_detections = []
+                now = __import__("time").time()
+                if now - self._last_drone_error_log > 15:
+                    logger.error("Drone analytics unavailable for camera %s: %s", camera_id, exc, exc_info=True)
+                    self._last_drone_error_log = now
 
         annotated = frame.copy()
         for d in detections:
