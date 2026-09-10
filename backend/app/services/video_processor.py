@@ -6,20 +6,36 @@ import time
 from dataclasses import dataclass
 
 from app.ai.video import OpenCVVideoSource
-from app.schemas.camera import CameraStatus
+from app.core.config import settings
+from app.services.analytics_pipeline import AnalyticsPipeline
 from app.services.camera_manager import CameraManager
+from app.services.event_engine import RuleEventEngine
+from app.services.event_store import EventStore
+from app.services.frame_store import FrameStore
+from app.services.zone_manager import ZoneManager
+from app.schemas.camera import CameraStatus
 
 logger = logging.getLogger(__name__)
+
 
 @dataclass
 class ProcessorState:
     thread: threading.Thread
     stop_event: threading.Event
 
+
 class VideoProcessor:
-    """Owns camera workers and provides a model-agnostic frame-processing hook."""
-    def __init__(self, camera_manager: CameraManager) -> None:
+    """Owns camera workers and connects ingestion to perception and event reasoning."""
+
+    def __init__(self, camera_manager: CameraManager, frame_store: FrameStore | None = None,
+                 zone_manager: ZoneManager | None = None, event_engine: RuleEventEngine | None = None,
+                 event_store: EventStore | None = None, model_path: str | None = None) -> None:
         self.camera_manager = camera_manager
+        self.frame_store = frame_store or FrameStore()
+        self.zone_manager = zone_manager or ZoneManager()
+        self.event_engine = event_engine or RuleEventEngine()
+        self.event_store = event_store or EventStore()
+        self.pipeline = AnalyticsPipeline(self.frame_store, model_path or settings.model_path)
         self._workers: dict[str, ProcessorState] = {}
         self._lock = threading.RLock()
 
@@ -71,10 +87,9 @@ class VideoProcessor:
                     break
                 frames += 1
                 elapsed = max(time.monotonic() - started, 0.001)
-                self.camera_manager.set_runtime(
-                    camera_id, status=CameraStatus.ONLINE,
-                    fps=frames / elapsed, frames_processed=frames,
-                )
+                self.camera_manager.set_runtime(camera_id, status=CameraStatus.ONLINE,
+                                                fps=frames / elapsed, frames_processed=frames,
+                                                last_frame_at=time.time())
                 self.process_frame(camera_id, packet)
         except Exception as exc:
             failed = True
@@ -92,5 +107,9 @@ class VideoProcessor:
                                                 frames_processed=frames, error=None)
 
     def process_frame(self, camera_id: str, packet) -> None:
-        """Extension point for Phase 2 detection/tracking. Intentionally no model here."""
-        return None
+        detections, tracks = self.pipeline.process(camera_id, packet)
+        events = self.event_engine.evaluate(
+            camera_id, tracks, self.zone_manager.list(camera_id), packet.frame.shape, packet.timestamp
+        )
+        for event in events:
+            self.event_store.add(event)
