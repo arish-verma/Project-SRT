@@ -46,7 +46,11 @@ class AnalyticsPipeline:
 
         if self.drone_enabled and packet.frame_index % self.drone_scan_interval == 0:
             try:
-                self.last_drone_detections = self.drone_detector.detect(frame)
+                aerial_candidates = [
+                    d for d in detections
+                    if d.label.lower() in {"airplane", "aircraft", "helicopter"}
+                ]
+                self.last_drone_detections = self.drone_detector.detect(frame, aerial_candidates=aerial_candidates)
             except Exception as exc:
                 # Do not permanently disable the specialist detector. Model
                 # downloads and GPU initialization can fail transiently, and
@@ -59,6 +63,12 @@ class AnalyticsPipeline:
 
         annotated = frame.copy()
         for d in detections:
+            # When AeroYOLO has positively identified an overlapping drone,
+            # don't also display the misleading general-YOLO "airplane" label.
+            if d.label.lower() in {"airplane", "aircraft", "helicopter"} and any(
+                DroneDetector._iou(d.bbox, drone.bbox) >= 0.15 for drone in self.last_drone_detections
+            ):
+                continue
             x1, y1, x2, y2 = map(int, d.bbox)
             cv2.rectangle(annotated, (x1, y1), (x2, y2), (255, 255, 255), 2)
             cv2.putText(annotated, f"{d.label} {d.confidence:.0%}", (x1, max(18, y1 - 6)),
