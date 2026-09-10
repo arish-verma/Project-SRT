@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class EventSeverity(str, Enum):
@@ -27,4 +27,4 @@ class EventRecord(BaseModel):
     zone_name: str | None = None
     message: str
     evidence_frame: str | None = None
-    metadata: dict = {}
+    metadata: dict = Field(default_factory=dict)
