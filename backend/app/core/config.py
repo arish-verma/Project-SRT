@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     model_path: str = "yolo11n.pt"
     model_confidence: float = 0.35
+    drone_model_path: str = "sapoepsilon/yolov11s-drone-detector"
+    drone_model_confidence: float = 0.45
+    drone_scan_interval: int = 3
     event_storage_path: str = "storage/events"
     upload_storage_path: str = "storage/uploads"
     max_upload_size_mb: int = 500
