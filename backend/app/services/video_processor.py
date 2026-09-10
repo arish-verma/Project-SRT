@@ -64,6 +64,7 @@ class VideoProcessor:
         source = OpenCVVideoSource(camera.source, source_id=camera_id)
         started = time.monotonic()
         frames = 0
+        failed = False
         try:
             for packet in source.frames():
                 if stop_event.is_set():
@@ -76,6 +77,7 @@ class VideoProcessor:
                 )
                 self.process_frame(camera_id, packet)
         except Exception as exc:
+            failed = True
             logger.exception("Camera %s processing failed", camera_id)
             self.camera_manager.set_runtime(camera_id, status=CameraStatus.ERROR,
                                             frames_processed=frames, error=str(exc))
@@ -85,7 +87,7 @@ class VideoProcessor:
                 self._workers.pop(camera_id, None)
             if not self.camera_manager.get(camera_id):
                 return
-            if stop_event.is_set():
+            if not failed:
                 self.camera_manager.set_runtime(camera_id, status=CameraStatus.OFFLINE,
                                                 frames_processed=frames, error=None)
 
