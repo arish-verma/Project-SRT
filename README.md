@@ -2,27 +2,26 @@
 
 Project SRT is an AI-assisted intelligent video analytics platform for border-surveillance scenarios using existing CCTV/IP-camera infrastructure.
 
-## What works in this branch
-- Webcam input (`0` or another OpenCV camera index)
-- Local video path evaluation
-- Browser video upload to server storage
-- RTSP / HTTP camera source ingestion
-- Live browser-compatible MJPEG stream
-- Person/vehicle detection through a lazy YOLO adapter
-- Stable object track IDs through a replaceable tracking boundary
-- Normalized polygon virtual fences
-- Explainable intrusion events and risk scores
-- Evidence JPEG capture for generated events
-- In-memory event history API
+## End-to-end capabilities
+- Webcam, uploaded sample video, local video path and RTSP/HTTP camera ingestion
+- Browser-compatible MJPEG live stream
+- Lazy YOLO person/vehicle detection with replaceable tracker boundary
+- Normalized polygon virtual fences and explainable intrusion reasoning
+- Persistent SQLite event history and evidence JPEG capture
+- Persistent operator alert queue with NEW / ACKNOWLEDGED / RESOLVED / DISMISSED states
+- Real-time WebSocket feeds for events and alerts
+- Analytics summary endpoint and command-center dashboard
 - Deterministic natural-language-style event search
-- React/TypeScript command-center dashboard
+- Optional local face detection API; recognition remains a separate controlled integration
+- Swappable ANPR/OCR service boundary with validation and confidence handling
+- Explainable risk scoring and severity classification
 - Docker Compose and GitHub Actions CI
 
 ## Architecture
 
-`CAMERA → INGESTION → PERCEPTION → TRACKING → SPATIAL/TEMPORAL CONTEXT → EVENT → RISK → EVIDENCE → OPERATOR`
+`CAMERA → INGESTION → PERCEPTION → TRACKING → SPATIAL/TEMPORAL CONTEXT → EVENT → RISK → ALERT → EVIDENCE → OPERATOR`
 
-The AI layer is deliberately adapter-based so detector, tracker, face, ANPR and activity models can be upgraded without rewriting the application layer.
+The AI layer is adapter-based so detector, tracker, face, ANPR and activity models can be upgraded without rewriting the application layer.
 
 ## Quick start — Windows
 
@@ -46,13 +45,13 @@ npm run dev
 Open the Vite URL, normally `http://localhost:5173`.
 
 ## Camera workflows
-1. **WEBCAM** — enter camera index `0`, add, then Start. This expects the backend to run on the machine hosting the webcam.
-2. **VIDEO FILE** — select an MP4/MOV/MKV/WebM sample; SRT stores it under `storage/uploads` and can process it as a camera source.
+1. **WEBCAM** — enter camera index `0`, add, then Start. The backend must run on the machine hosting the webcam.
+2. **VIDEO FILE** — select MP4/MOV/MKV/WebM; SRT stores it under `storage/uploads` and processes it as a source.
 3. **IP / RTSP** — enter the RTSP URL. Keep credentials out of screenshots, commits and logs.
 4. **LOCAL PATH** — enter a path visible to the backend process.
 
 ## Virtual fence
-Create a zone with normalized polygon points (`0..1`) using the API. Example:
+Create a zone with normalized polygon points (`0..1`) through the API. Example:
 
 ```json
 {
@@ -65,8 +64,12 @@ Create a zone with normalized polygon points (`0..1`) using the API. Example:
 }
 ```
 
-## Important validation note
-The repository can be edited and reviewed through the connected GitHub workflow, but this environment cannot execute the project's local GPU/RTSP stack. GitHub Actions will validate Python imports/tests and the frontend build. Final inference speed, NVIDIA/CUDA compatibility, webcam permissions and a real RTSP camera must be validated on the demo laptop.
+## API surface
+
+`/api/v1/cameras` · `/api/v1/zones` · `/api/v1/events` · `/api/v1/alerts` · `/api/v1/analytics/summary` · `/api/v1/faces/detect` · `/api/v1/uploads/video` · `/api/v1/search` · `/ws/events` · `/ws/alerts`
+
+## Validation note
+The repository is implemented through the connected GitHub workflow, but the current environment cannot execute the project's local NVIDIA/CUDA, webcam or RTSP stack. GitHub Actions validates code-level tests/builds; final inference speed, GPU compatibility, camera permissions and a real RTSP source must be tested on the demo laptop.
 
 ## Safety and claims
-SRT is an assistive surveillance analytics prototype. Risk scores are explainable indicators, not proof of criminal intent. Accuracy depends on camera resolution, lighting, scene geometry, model quality and hardware. Facial recognition, ANPR and advanced behavior models remain controlled extension points rather than claims of perfect recognition.
+SRT is an assistive surveillance analytics prototype. Risk scores are explainable indicators, not proof of criminal intent. Accuracy depends on camera resolution, lighting, scene geometry, model quality and hardware. Facial recognition and ANPR integrations require appropriate authorization, data governance and human oversight.
