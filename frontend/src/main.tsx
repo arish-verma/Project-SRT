@@ -7,24 +7,87 @@ type Event={event_id:string;camera_id:string;timestamp:string;event_type:string;
 type Alert={alert_id:string;event_id:string;camera_id:string;created_at:string;severity:string;title:string;message:string;status:string};
 const API=(import.meta.env.VITE_API_URL||'http://localhost:8000/api/v1').replace(/\/$/,'');
 const WS=(import.meta.env.VITE_WS_URL||'ws://localhost:8000').replace(/\/$/,'');
+
 function App(){
  const [cameras,setCameras]=useState<Camera[]>([]),[events,setEvents]=useState<Event[]>([]),[alerts,setAlerts]=useState<Alert[]>([]),[summary,setSummary]=useState<any>({});
  const [name,setName]=useState('Border Camera'),[location,setLocation]=useState('North Gate'),[source,setSource]=useState('0');
- const [mode,setMode]=useState<'WEBCAM'|'UPLOAD'|'RTSP'|'LOCAL'>('WEBCAM'); const fileRef=useRef<HTMLInputElement>(null);
- const load=async()=>{try{const [c,e,a,s]=await Promise.all([fetch(`${API}/cameras`),fetch(`${API}/events?limit=25`),fetch(`${API}/alerts?limit=15`),fetch(`${API}/analytics/summary`)]);setCameras(await c.json());setEvents(await e.json());setAlerts(await a.json());setSummary(await s.json())}catch{}};
+ const [mode,setMode]=useState<'WEBCAM'|'UPLOAD'|'RTSP'|'LOCAL'>('WEBCAM');
+ const [busy,setBusy]=useState(false),[message,setMessage]=useState('');
+ const fileRef=useRef<HTMLInputElement>(null);
+
+ const load=async()=>{
+  try{
+   const [c,e,a,s]=await Promise.all([fetch(`${API}/cameras`),fetch(`${API}/events?limit=25`),fetch(`${API}/alerts?limit=15`),fetch(`${API}/analytics/summary`)]);
+   if(!c.ok||!e.ok||!a.ok||!s.ok) throw Error('Backend request failed');
+   setCameras(await c.json());setEvents(await e.json());setAlerts(await a.json());setSummary(await s.json());
+  }catch(err){setMessage(`Cannot reach SRT backend at ${API}. Check that FastAPI is running on port 8000.`)}
+ };
  useEffect(()=>{load();const t=setInterval(load,2500);return()=>clearInterval(t)},[]);
- useEffect(()=>{let ws:WebSocket|undefined;try{ws=new WebSocket(`${WS}/ws/events`);ws.onmessage=()=>load();}catch{}return()=>ws?.close()},[]);
- const selectMode=(m:any)=>{setMode(m);if(m==='WEBCAM')setSource('0');else if(m!=='RTSP')setSource('')};
- const upload=async(f:File)=>{const fd=new FormData();fd.append('file',f);const r=await fetch(`${API}/uploads/video`,{method:'POST',body:fd});if(!r.ok)throw Error(await r.text());const x=await r.json();setSource(x.source);setMode('UPLOAD')};
- const add=async()=>{if(!source.trim())return;await fetch(`${API}/cameras`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,source,location,enabled:true})});setSource(mode==='WEBCAM'?'0':'');await load()};
- const act=async(id:string,a:'start'|'stop')=>{await fetch(`${API}/cameras/${id}/${a}`,{method:'POST'});await load()};
- const alertStatus=async(id:string,status:string)=>{await fetch(`${API}/alerts/${id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});await load()};
- return <div className="app"><header><div><div className="eyebrow">PROJECT SRT // COMMAND CENTER</div><h1>Smart Recognition & Tracking</h1><p>AI video analytics for existing CCTV infrastructure</p></div><div className="live"><i/> SYSTEM ONLINE</div></header>
- <section className="metrics"><Metric label="CAMERAS ONLINE" value={`${summary.cameras_online??0}/${summary.cameras_total??cameras.length}`}/><Metric label="EVENTS" value={summary.events_total??events.length}/><Metric label="HIGH RISK" value={summary.high_priority??0}/><Metric label="PIPELINE" value="LIVE"/></section>
- <main><section className="panel setup"><div className="paneltitle"><span>INPUT SOURCES</span><small>CONNECT / EVALUATE</small></div><div className="modes">{(['WEBCAM','UPLOAD','RTSP','LOCAL'] as const).map(m=><button className={mode===m?'active':''} onClick={()=>selectMode(m)}>{m==='WEBCAM'?'WEBCAM':m==='UPLOAD'?'VIDEO FILE':m==='RTSP'?'IP / RTSP':'LOCAL PATH'}</button>)}</div><div className="formrow"><input value={name} onChange={e=>setName(e.target.value)} placeholder="Camera name"/><input value={location} onChange={e=>setLocation(e.target.value)} placeholder="Location"/></div>{mode==='UPLOAD'?<><input ref={fileRef} type="file" accept="video/*" hidden onChange={e=>e.target.files?.[0]&&upload(e.target.files[0])}/><button className="primary" onClick={()=>fileRef.current?.click()}>SELECT SAMPLE VIDEO</button></>:<input value={source} onChange={e=>setSource(e.target.value)} placeholder={mode==='WEBCAM'?'Webcam index: 0':mode==='RTSP'?'rtsp://user:password@camera/stream':'C:/path/to/video.mp4'}/>}<button className="add" onClick={add}>+ ADD SOURCE</button></section>
- <section className="panel cameras"><div className="paneltitle"><span>LIVE CAMERAS</span><small>{cameras.length} CONFIGURED</small></div>{cameras.length===0?<div className="empty">Add a webcam, uploaded video, local file or RTSP/IP camera to begin.</div>:<div className="grid">{cameras.map(c=><article className="camera"><div className="feed">{c.status==='ONLINE'?<img src={`${API}/cameras/${c.camera_id}/stream`} />:<div className="offline">{c.status}<br/><small>{c.error||'Start processing to open stream'}</small></div>}<span className="tag">{c.source_type}</span></div><div className="caminfo"><div><b>{c.name}</b><small>{c.location||'Unassigned location'}</small></div><span className={c.status==='ONLINE'?'ok':'state'}>{c.status}</span></div><div className="controls"><span>{c.fps.toFixed(1)} FPS · {c.frames_processed} frames</span><button onClick={()=>act(c.camera_id,c.status==='ONLINE'?'stop':'start')}>{c.status==='ONLINE'?'STOP':'START'}</button></div></article>)}</div>}</section>
- <section className="panel events"><div className="paneltitle"><span>EVENT INTELLIGENCE</span><small>REAL-TIME FEED</small></div>{events.length===0?<div className="empty">No events yet. Create a restricted zone to activate intrusion reasoning.</div>:events.map(e=><div className={`event ${e.severity.toLowerCase()}`}><div className="dot"/><div className="eventmain"><b>{e.event_type} · {e.message}</b><small>{new Date(e.timestamp).toLocaleString()} · Track #{e.track_id??'—'} · {e.zone_name||'No zone'}</small></div><strong>{e.risk_score}</strong></div>)}</section>
- <section className="panel events"><div className="paneltitle"><span>ALERT QUEUE</span><small>OPERATOR ACTION</small></div>{alerts.length===0?<div className="empty">No active alerts.</div>:alerts.map(a=><div className={`event ${a.severity.toLowerCase()}`}><div className="dot"/><div className="eventmain"><b>{a.title}</b><small>{a.message} · {new Date(a.created_at).toLocaleString()}</small></div><span className="state">{a.status}</span>{a.status==='NEW'&&<button onClick={()=>alertStatus(a.alert_id,'ACKNOWLEDGED')}>ACK</button>}</div>)}</section>
- </main></div>}
+ useEffect(()=>{let ws:WebSocket|undefined;try{ws=new WebSocket(`${WS}/ws/events`);ws.onmessage=()=>load();ws.onerror=()=>{};}catch{}return()=>ws?.close()},[]);
+
+ const selectMode=(m:'WEBCAM'|'UPLOAD'|'RTSP'|'LOCAL')=>{
+  setMode(m);setMessage('');
+  if(m==='WEBCAM')setSource('0');else if(m!=='RTSP')setSource('');
+ };
+
+ const upload=async(f:File)=>{
+  setBusy(true);setMessage(`Uploading ${f.name}...`);
+  try{
+   const fd=new FormData();fd.append('file',f);
+   const r=await fetch(`${API}/uploads/video`,{method:'POST',body:fd});
+   if(!r.ok) throw Error(await r.text());
+   const x=await r.json();
+   if(!x.source) throw Error('Upload succeeded but backend returned no source path');
+   setSource(x.source);setMode('UPLOAD');setMessage(`Uploaded: ${f.name}. Click + ADD SOURCE to add it to SRT.`);
+  }catch(err){setMessage(`Video upload failed: ${err instanceof Error?err.message:'Unknown error'}`)}
+  finally{setBusy(false)}
+ };
+
+ const add=async()=>{
+  if(!source.trim()){setMessage('Enter a source or select a video first.');return;}
+  setBusy(true);setMessage('Adding camera source...');
+  try{
+   const r=await fetch(`${API}/cameras`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name.trim()||'SRT Camera',source:source.trim(),location:location.trim(),enabled:true})});
+   if(!r.ok) throw Error(await r.text());
+   const camera=await r.json();
+   setMessage(`${camera.name} added successfully. Click START on its camera card.`);
+   if(mode!=='RTSP')setSource(mode==='WEBCAM'?'0':'');
+   await load();
+  }catch(err){setMessage(`Could not add source: ${err instanceof Error?err.message:'Unknown error'}`)}
+  finally{setBusy(false)}
+ };
+
+ const act=async(id:string,a:'start'|'stop')=>{
+  setBusy(true);setMessage(`${a==='start'?'Starting':'Stopping'} camera...`);
+  try{
+   const r=await fetch(`${API}/cameras/${id}/${a}`,{method:'POST'});
+   if(!r.ok) throw Error(await r.text());
+   await load();
+  }catch(err){setMessage(`Camera ${a} failed: ${err instanceof Error?err.message:'Unknown error'}`)}
+  finally{setBusy(false)}
+ };
+ const alertStatus=async(id:string,status:string)=>{try{const r=await fetch(`${API}/alerts/${id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});if(!r.ok)throw Error(await r.text());await load()}catch(err){setMessage(`Alert update failed: ${err instanceof Error?err.message:'Unknown error'}`)}};
+
+ return <div className="app">
+  <header><div><div className="eyebrow">PROJECT SRT // COMMAND CENTER</div><h1>Smart Recognition & Tracking</h1><p>AI video analytics for existing CCTV infrastructure</p></div><div className="live"><i/> SYSTEM ONLINE</div></header>
+  {message&&<div className="notice" role="status">{message}</div>}
+  <section className="metrics"><Metric label="CAMERAS ONLINE" value={`${summary.cameras_online??0}/${summary.cameras_total??cameras.length}`}/><Metric label="EVENTS" value={summary.events_total??events.length}/><Metric label="HIGH RISK" value={summary.high_priority??0}/><Metric label="PIPELINE" value="LIVE"/></section>
+  <main>
+   <section className="panel setup">
+    <div className="paneltitle"><span>INPUT SOURCES</span><small>CONNECT / EVALUATE</small></div>
+    <div className="modes">{(['WEBCAM','UPLOAD','RTSP','LOCAL'] as const).map(m=><button key={m} className={mode===m?'active':''} onClick={()=>selectMode(m)}>{m==='WEBCAM'?'WEBCAM':m==='UPLOAD'?'VIDEO FILE':m==='RTSP'?'IP / RTSP':'LOCAL PATH'}</button>)}</div>
+    <div className="formrow"><input value={name} onChange={e=>setName(e.target.value)} placeholder="Camera name"/><input value={location} onChange={e=>setLocation(e.target.value)} placeholder="Location"/></div>
+    {mode==='UPLOAD'?<>
+      <input ref={fileRef} type="file" accept="video/mp4,video/avi,video/quicktime,video/x-matroska,video/webm" hidden onChange={e=>{const f=e.target.files?.[0];if(f)upload(f);e.currentTarget.value=''}}/>
+      <button className="primary" disabled={busy} onClick={()=>fileRef.current?.click()}>{busy?'UPLOADING...':'SELECT SAMPLE VIDEO'}</button>
+    </>:<input value={source} onChange={e=>setSource(e.target.value)} placeholder={mode==='WEBCAM'?'Webcam index: 0':mode==='RTSP'?'rtsp://user:password@camera/stream':'C:/path/to/video.mp4'}/>} 
+    <button className="add" disabled={busy||!source.trim()} onClick={add}>+ ADD SOURCE</button>
+   </section>
+   <section className="panel cameras"><div className="paneltitle"><span>LIVE CAMERAS</span><small>{cameras.length} CONFIGURED</small></div>{cameras.length===0?<div className="empty">Add a webcam, uploaded video, local file or RTSP/IP camera to begin.</div>:<div className="grid">{cameras.map(c=><article key={c.camera_id} className="camera"><div className="feed">{c.status==='ONLINE'?<img src={`${API}/cameras/${c.camera_id}/stream`} alt={`${c.name} live stream`}/>:<div className="offline">{c.status}<br/><small>{c.error||'Start processing to open stream'}</small></div>}<span className="tag">{c.source_type}</span></div><div className="caminfo"><div><b>{c.name}</b><small>{c.location||'Unassigned location'}</small></div><span className={c.status==='ONLINE'?'ok':'state'}>{c.status}</span></div><div className="controls"><span>{c.fps.toFixed(1)} FPS · {c.frames_processed} frames</span><button disabled={busy} onClick={()=>act(c.camera_id,c.status==='ONLINE'?'stop':'start')}>{c.status==='ONLINE'?'STOP':'START'}</button></div></article>)}</div>}</section>
+   <section className="panel events"><div className="paneltitle"><span>EVENT INTELLIGENCE</span><small>REAL-TIME FEED</small></div>{events.length===0?<div className="empty">No events yet. Create a restricted zone to activate intrusion reasoning.</div>:events.map(e=><div key={e.event_id} className={`event ${e.severity.toLowerCase()}`}><div className="dot"/><div className="eventmain"><b>{e.event_type} · {e.message}</b><small>{new Date(e.timestamp).toLocaleString()} · Track #{e.track_id??'—'} · {e.zone_name||'No zone'}</small></div><strong>{e.risk_score}</strong></div>)}</section>
+   <section className="panel events"><div className="paneltitle"><span>ALERT QUEUE</span><small>OPERATOR ACTION</small></div>{alerts.length===0?<div className="empty">No active alerts.</div>:alerts.map(a=><div key={a.alert_id} className={`event ${a.severity.toLowerCase()}`}><div className="dot"/><div className="eventmain"><b>{a.title}</b><small>{a.message} · {new Date(a.created_at).toLocaleString()}</small></div><span className="state">{a.status}</span>{a.status==='NEW'&&<button onClick={()=>alertStatus(a.alert_id,'ACKNOWLEDGED')}>ACK</button>}</div>)}</section>
+  </main>
+ </div>
+}
 function Metric({label,value}:{label:string,value:any}){return <div className="metric"><small>{label}</small><b>{value}</b></div>}
 createRoot(document.getElementById('root')!).render(<App/>);
