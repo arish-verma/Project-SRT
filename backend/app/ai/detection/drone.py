@@ -13,10 +13,10 @@ logger = logging.getLogger(__name__)
 class DroneDetector(Detector):
     """Specialist aerial detector with tiny-target candidate refinement.
 
-    AeroYOLO distinguishes aircraft, drone and helicopter.  General YOLO can
-    sometimes localize a tiny drone as ``airplane``; those aerial candidates
-    are cropped and enlarged before AeroYOLO classifies them.  We never map an
-    airplane prediction directly to a drone.
+    AeroYOLO distinguishes aircraft, drone and helicopter. General YOLO can
+    localize a tiny drone as ``airplane``; those aerial candidates are cropped,
+    enlarged and classified by AeroYOLO. We never map airplane directly to
+    drone.
     """
 
     def __init__(self, model_path: str, confidence: float = 0.20) -> None:
@@ -32,11 +32,11 @@ class DroneDetector(Detector):
 
             self._device = 0 if torch.cuda.is_available() else "cpu"
             if "/" in self.model_path and not self.model_path.lower().endswith((".pt", ".onnx", ".engine")):
-                try:
-                    self._model = YOLO.from_pretrained(self.model_path)
-                except Exception:
-                    logger.exception("Could not load aerial model via from_pretrained; retrying direct YOLO load")
-                    self._model = YOLO(self.model_path)
+                # Download the actual best.pt explicitly. This avoids model
+                # loader/version ambiguity with Hugging Face repositories.
+                from huggingface_hub import hf_hub_download
+                model_file = hf_hub_download(repo_id=self.model_path, filename="best.pt")
+                self._model = YOLO(model_file)
             else:
                 self._model = YOLO(self.model_path)
             self._model.to(self._device)
@@ -74,35 +74,66 @@ class DroneDetector(Detector):
 
         for box, conf, cls in zip(result.boxes.xyxy, result.boxes.conf, result.boxes.cls):
             label = str(names[int(cls)]).strip().lower()
-            # Never convert aircraft/helicopters into drones.
             if label != "drone":
                 continue
             coords = tuple(float(v) for v in box.tolist())
             detections.append(Detection(label="drone", confidence=float(conf), bbox=coords))
         return detections
 
+    def _candidate_predict(self, frame: Any, candidates: list[Detection]) -> list[Detection]:
+        """Classify localized aerial candidates at several enlarged scales."""
+        height, width = frame.shape[:2]
+        results: list[Detection] = []
+        for candidate in candidates:
+            if candidate.label.lower() not in {"airplane", "aircraft", "helicopter"}:
+                continue
+
+            x1, y1, x2, y2 = candidate.bbox
+            bw, bh = max(1.0, x2 - x1), max(1.0, y2 - y1)
+            # For a ~20 px target, keep enough sky context while making the
+            # target occupy a useful fraction of the specialist input.
+            for pad_factor in (1.5, 2.5, 4.0):
+                pad = max(16.0, max(bw, bh) * pad_factor)
+                cx1, cy1 = max(0, int(x1 - pad)), max(0, int(y1 - pad))
+                cx2, cy2 = min(width, int(x2 + pad)), min(height, int(y2 + pad))
+                crop = frame[cy1:cy2, cx1:cx2]
+                if crop.size == 0:
+                    continue
+
+                target_size = 960
+                scale = max(1.0, target_size / max(crop.shape[:2]))
+                if scale > 1.0:
+                    crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+
+                for detection in self._predict(crop, confidence=0.05, imgsz=960):
+                    dx1, dy1, dx2, dy2 = detection.bbox
+                    inv = 1.0 / scale
+                    mapped = (dx1 * inv + cx1, dy1 * inv + cy1, dx2 * inv + cx1, dy2 * inv + cy1)
+                    results.append(Detection(label="drone", confidence=detection.confidence, bbox=mapped))
+
+        results.sort(key=lambda item: item.confidence, reverse=True)
+        kept: list[Detection] = []
+        for result in results:
+            if all(self._iou(result.bbox, existing.bbox) < 0.45 for existing in kept):
+                kept.append(result)
+        return kept
+
     def _tiled_predict(self, frame: Any) -> list[Detection]:
         """Run overlapping higher-resolution tiles for tiny aerial targets."""
         height, width = frame.shape[:2]
         if width < 160 or height < 160:
             return []
-
         tile_w = max(160, int(width * 0.60))
         tile_h = max(160, int(height * 0.60))
         x_starts = sorted({0, max(0, width - tile_w)})
         y_starts = sorted({0, max(0, height - tile_h)})
-
         candidates: list[Detection] = []
         for y0 in y_starts:
             for x0 in x_starts:
                 tile = frame[y0:y0 + tile_h, x0:x0 + tile_w]
-                for detection in self._predict(tile, confidence=max(0.10, self.confidence * 0.65), imgsz=960):
+                for detection in self._predict(tile, confidence=0.06, imgsz=960):
                     x1, y1, x2, y2 = detection.bbox
-                    candidates.append(Detection(
-                        label="drone", confidence=detection.confidence,
-                        bbox=(x1 + x0, y1 + y0, x2 + x0, y2 + y0),
-                    ))
-
+                    candidates.append(Detection(label="drone", confidence=detection.confidence, bbox=(x1 + x0, y1 + y0, x2 + x0, y2 + y0)))
         candidates.sort(key=lambda item: item.confidence, reverse=True)
         kept: list[Detection] = []
         for candidate in candidates:
@@ -110,43 +141,16 @@ class DroneDetector(Detector):
                 kept.append(candidate)
         return kept
 
-    def _candidate_predict(self, frame: Any, candidates: list[Detection]) -> list[Detection]:
-        """Refine tiny general-YOLO aerial candidates with an enlarged crop."""
-        height, width = frame.shape[:2]
-        results: list[Detection] = []
-        for candidate in candidates:
-            if candidate.label.lower() not in {"airplane", "aircraft", "helicopter"}:
-                continue
-            x1, y1, x2, y2 = candidate.bbox
-            bw, bh = max(1.0, x2 - x1), max(1.0, y2 - y1)
-            # Generous context around tiny aerial objects, then upscale.
-            pad = max(24.0, max(bw, bh) * 2.5)
-            cx1, cy1 = max(0, int(x1 - pad)), max(0, int(y1 - pad))
-            cx2, cy2 = min(width, int(x2 + pad)), min(height, int(y2 + pad))
-            crop = frame[cy1:cy2, cx1:cx2]
-            if crop.size == 0:
-                continue
-            scale = max(1.0, 640.0 / max(crop.shape[:2]))
-            if scale > 1.0:
-                crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-
-            for detection in self._predict(crop, confidence=0.10, imgsz=640):
-                dx1, dy1, dx2, dy2 = detection.bbox
-                inv = 1.0 / scale
-                mapped = (dx1 * inv + cx1, dy1 * inv + cy1, dx2 * inv + cx1, dy2 * inv + cy1)
-                results.append(Detection(label="drone", confidence=detection.confidence, bbox=mapped))
-        return results
-
     def detect(self, frame: Any, aerial_candidates: list[Detection] | None = None) -> list[Detection]:
-        # First try the full frame, then overlapping tiles.
+        # Candidate refinement is intentionally first: a tiny drone that fills
+        # only a few dozen pixels in the full frame is much easier to classify
+        # after localization and enlargement.
+        if aerial_candidates:
+            candidates = self._candidate_predict(frame, aerial_candidates)
+            if candidates:
+                return candidates
+
         detections = self._predict(frame, imgsz=960)
         if detections:
             return detections
-        detections = self._tiled_predict(frame)
-        if detections:
-            return detections
-        # Finally, use the general detector's aerial localization as a
-        # candidate generator. This is the important tiny-drone fallback.
-        if aerial_candidates:
-            return self._candidate_predict(frame, aerial_candidates)
-        return []
+        return self._tiled_predict(frame)
