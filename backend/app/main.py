@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.cameras import router as cameras_router
 from app.api.events import router as events_router
+from app.api.realtime import router as realtime_router
 from app.api.search import router as search_router
 from app.api.streams import router as streams_router
 from app.api.system import router as system_router
@@ -38,6 +39,7 @@ app.include_router(zones_router, prefix=settings.api_prefix)
 app.include_router(events_router, prefix=settings.api_prefix)
 app.include_router(search_router, prefix=settings.api_prefix)
 app.include_router(uploads_router, prefix=settings.api_prefix)
+app.include_router(realtime_router)
 
 
 @app.get("/")
