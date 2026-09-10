@@ -4,16 +4,17 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from app.ai.video import OpenCVVideoSource
 from app.core.config import settings
+from app.schemas.camera import CameraStatus
 from app.services.analytics_pipeline import AnalyticsPipeline
 from app.services.camera_manager import CameraManager
 from app.services.event_engine import RuleEventEngine
 from app.services.event_store import EventStore
 from app.services.frame_store import FrameStore
 from app.services.zone_manager import ZoneManager
-from app.schemas.camera import CameraStatus
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ class VideoProcessor:
         self.zone_manager = zone_manager or ZoneManager()
         self.event_engine = event_engine or RuleEventEngine()
         self.event_store = event_store or EventStore()
-        self.pipeline = AnalyticsPipeline(self.frame_store, model_path or settings.model_path)
+        self.pipeline = AnalyticsPipeline(self.frame_store, model_path or settings.model_path, settings.model_confidence)
         self._workers: dict[str, ProcessorState] = {}
         self._lock = threading.RLock()
 
@@ -48,8 +49,7 @@ class VideoProcessor:
             if state and state.thread.is_alive():
                 return True
             stop_event = threading.Event()
-            thread = threading.Thread(target=self._run, args=(camera_id, stop_event),
-                                      name=f"srt-camera-{camera_id}", daemon=True)
+            thread = threading.Thread(target=self._run, args=(camera_id, stop_event), name=f"srt-camera-{camera_id}", daemon=True)
             self._workers[camera_id] = ProcessorState(thread, stop_event)
             thread.start()
             return True
@@ -87,15 +87,13 @@ class VideoProcessor:
                     break
                 frames += 1
                 elapsed = max(time.monotonic() - started, 0.001)
-                self.camera_manager.set_runtime(camera_id, status=CameraStatus.ONLINE,
-                                                fps=frames / elapsed, frames_processed=frames,
-                                                last_frame_at=time.time())
+                self.camera_manager.set_runtime(camera_id, status=CameraStatus.ONLINE, fps=frames / elapsed,
+                                                frames_processed=frames, last_frame_at=time.time())
                 self.process_frame(camera_id, packet)
         except Exception as exc:
             failed = True
             logger.exception("Camera %s processing failed", camera_id)
-            self.camera_manager.set_runtime(camera_id, status=CameraStatus.ERROR,
-                                            frames_processed=frames, error=str(exc))
+            self.camera_manager.set_runtime(camera_id, status=CameraStatus.ERROR, frames_processed=frames, error=str(exc))
         finally:
             source.close()
             with self._lock:
@@ -103,13 +101,19 @@ class VideoProcessor:
             if not self.camera_manager.get(camera_id):
                 return
             if not failed:
-                self.camera_manager.set_runtime(camera_id, status=CameraStatus.OFFLINE,
-                                                frames_processed=frames, error=None)
+                self.camera_manager.set_runtime(camera_id, status=CameraStatus.OFFLINE, frames_processed=frames, error=None)
 
     def process_frame(self, camera_id: str, packet) -> None:
-        detections, tracks = self.pipeline.process(camera_id, packet)
-        events = self.event_engine.evaluate(
-            camera_id, tracks, self.zone_manager.list(camera_id), packet.frame.shape, packet.timestamp
-        )
+        _, tracks = self.pipeline.process(camera_id, packet)
+        events = self.event_engine.evaluate(camera_id, tracks, self.zone_manager.list(camera_id), packet.frame.shape, packet.timestamp)
+        snapshot = self.frame_store.get(camera_id)
+        root = Path(settings.event_storage_path)
         for event in events:
+            evidence_path = None
+            if snapshot:
+                root.mkdir(parents=True, exist_ok=True)
+                evidence = root / f"{event.event_id}.jpg"
+                evidence.write_bytes(snapshot.jpeg)
+                evidence_path = str(evidence)
+            event = event.model_copy(update={"evidence_frame": evidence_path})
             self.event_store.add(event)
