@@ -18,16 +18,13 @@ from app.services.zone_manager import ZoneManager
 
 logger = logging.getLogger(__name__)
 
-
 @dataclass
 class ProcessorState:
     thread: threading.Thread
     stop_event: threading.Event
 
-
 class VideoProcessor:
     """Owns camera workers and connects ingestion to perception and event reasoning."""
-
     def __init__(self, camera_manager: CameraManager, frame_store: FrameStore | None = None,
                  zone_manager: ZoneManager | None = None, event_engine: RuleEventEngine | None = None,
                  event_store: EventStore | None = None, model_path: str | None = None) -> None:
@@ -42,30 +39,24 @@ class VideoProcessor:
 
     def start(self, camera_id: str) -> bool:
         camera = self.camera_manager.get(camera_id)
-        if not camera or not camera.enabled:
-            return False
+        if not camera or not camera.enabled: return False
         with self._lock:
             state = self._workers.get(camera_id)
-            if state and state.thread.is_alive():
-                return True
+            if state and state.thread.is_alive(): return True
             stop_event = threading.Event()
             thread = threading.Thread(target=self._run, args=(camera_id, stop_event), name=f"srt-camera-{camera_id}", daemon=True)
             self._workers[camera_id] = ProcessorState(thread, stop_event)
-            thread.start()
-            return True
+            thread.start(); return True
 
     def stop(self, camera_id: str) -> bool:
         with self._lock:
             state = self._workers.get(camera_id)
-            if not state:
-                return False
-            state.stop_event.set()
-            return True
+            if not state: return False
+            state.stop_event.set(); return True
 
     def stop_all(self) -> None:
         with self._lock:
-            for state in self._workers.values():
-                state.stop_event.set()
+            for state in self._workers.values(): state.stop_event.set()
 
     def is_running(self, camera_id: str) -> bool:
         with self._lock:
@@ -74,21 +65,17 @@ class VideoProcessor:
 
     def _run(self, camera_id: str, stop_event: threading.Event) -> None:
         camera = self.camera_manager.get(camera_id)
-        if not camera:
-            return
+        if not camera: return
         self.camera_manager.set_runtime(camera_id, status=CameraStatus.CONNECTING, error=None)
         source = OpenCVVideoSource(camera.source, source_id=camera_id)
-        started = time.monotonic()
-        frames = 0
-        failed = False
+        started, frames, failed = time.monotonic(), 0, False
         try:
             for packet in source.frames():
-                if stop_event.is_set():
-                    break
+                if stop_event.is_set(): break
                 frames += 1
                 elapsed = max(time.monotonic() - started, 0.001)
                 self.camera_manager.set_runtime(camera_id, status=CameraStatus.ONLINE, fps=frames / elapsed,
-                                                frames_processed=frames, last_frame_at=time.time())
+                    frames_processed=frames, last_frame_at=time.time())
                 self.process_frame(camera_id, packet)
         except Exception as exc:
             failed = True
@@ -96,11 +83,8 @@ class VideoProcessor:
             self.camera_manager.set_runtime(camera_id, status=CameraStatus.ERROR, frames_processed=frames, error=str(exc))
         finally:
             source.close()
-            with self._lock:
-                self._workers.pop(camera_id, None)
-            if not self.camera_manager.get(camera_id):
-                return
-            if not failed:
+            with self._lock: self._workers.pop(camera_id, None)
+            if self.camera_manager.get(camera_id) and not failed:
                 self.camera_manager.set_runtime(camera_id, status=CameraStatus.OFFLINE, frames_processed=frames, error=None)
 
     def process_frame(self, camera_id: str, packet) -> None:
@@ -117,3 +101,9 @@ class VideoProcessor:
                 evidence_path = str(evidence)
             event = event.model_copy(update={"evidence_frame": evidence_path})
             self.event_store.add(event)
+            # Alert creation is imported lazily to avoid runtime import cycles.
+            try:
+                from app.services.runtime import alert_store
+                alert_store.ensure_for_event(event)
+            except Exception:
+                logger.exception("Failed to persist alert for %s", event.event_id)
