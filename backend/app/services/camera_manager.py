@@ -25,7 +25,7 @@ class CameraRecord:
 
 
 class CameraManager:
-    """Runtime camera registry. Persistence is intentionally deferred to Phase 2."""
+    """Thread-safe runtime camera registry."""
     def __init__(self) -> None:
         self._records: dict[str, CameraRecord] = {}
         self._lock = RLock()
@@ -40,15 +40,21 @@ class CameraManager:
             return record.camera.model_copy(deep=True) if record else None
 
     def create(self, data: CameraCreate) -> Camera:
-        camera = Camera(
-            camera_id=f"CAM-{uuid4().hex[:8].upper()}",
-            name=data.name,
-            source=data.source,
-            source_type=infer_source_type(data.source),
-            location=data.location,
-            enabled=data.enabled,
-        )
+        # Honour caller-supplied IDs so integrations can use stable camera identifiers.
+        # Generate one only when the API client leaves it blank (supported by the schema).
+        requested_id = getattr(data, "camera_id", None)
+        camera_id = (requested_id or f"CAM-{uuid4().hex[:8].upper()}").strip()
         with self._lock:
+            if camera_id in self._records:
+                raise ValueError(f"Camera {camera_id} already exists")
+            camera = Camera(
+                camera_id=camera_id,
+                name=data.name,
+                source=data.source,
+                source_type=infer_source_type(data.source),
+                location=data.location,
+                enabled=data.enabled,
+            )
             self._records[camera.camera_id] = CameraRecord(camera)
         return camera.model_copy(deep=True)
 
