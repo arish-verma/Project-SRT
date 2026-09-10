@@ -13,7 +13,10 @@ def list_cameras() -> list[Camera]:
 
 @router.post("", response_model=Camera, status_code=status.HTTP_201_CREATED)
 def create_camera(data: CameraCreate) -> Camera:
-    return camera_manager.create(data)
+    try:
+        return camera_manager.create(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/{camera_id}", response_model=Camera)
