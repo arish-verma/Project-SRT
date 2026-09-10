@@ -3,17 +3,20 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import cv2
+
 from app.ai.interfaces import Detection, Detector
 
 logger = logging.getLogger(__name__)
 
 
 class DroneDetector(Detector):
-    """Specialist aerial detector with a small-target tiled fallback.
+    """Specialist aerial detector with tiny-target candidate refinement.
 
-    The configured model is multi-class (aircraft / drone / helicopter), so
-    only an explicit ``drone`` prediction is promoted to SRT's drone event.
-    Generic aircraft predictions are deliberately ignored here.
+    AeroYOLO distinguishes aircraft, drone and helicopter.  General YOLO can
+    sometimes localize a tiny drone as ``airplane``; those aerial candidates
+    are cropped and enlarged before AeroYOLO classifies them.  We never map an
+    airplane prediction directly to a drone.
     """
 
     def __init__(self, model_path: str, confidence: float = 0.20) -> None:
@@ -37,6 +40,7 @@ class DroneDetector(Detector):
             else:
                 self._model = YOLO(self.model_path)
             self._model.to(self._device)
+            logger.info("Drone model loaded: %s", self.model_path)
         return self._model
 
     @staticmethod
@@ -70,19 +74,15 @@ class DroneDetector(Detector):
 
         for box, conf, cls in zip(result.boxes.xyxy, result.boxes.conf, result.boxes.cls):
             label = str(names[int(cls)]).strip().lower()
-            # Critical safety/accuracy rule: never convert aircraft into drone.
+            # Never convert aircraft/helicopters into drones.
             if label != "drone":
                 continue
             coords = tuple(float(v) for v in box.tolist())
-            detections.append(Detection(
-                label="drone",
-                confidence=float(conf),
-                bbox=coords,
-            ))
+            detections.append(Detection(label="drone", confidence=float(conf), bbox=coords))
         return detections
 
     def _tiled_predict(self, frame: Any) -> list[Detection]:
-        """Run higher-resolution overlapping tiles for tiny aerial targets."""
+        """Run overlapping higher-resolution tiles for tiny aerial targets."""
         height, width = frame.shape[:2]
         if width < 160 or height < 160:
             return []
@@ -96,11 +96,10 @@ class DroneDetector(Detector):
         for y0 in y_starts:
             for x0 in x_starts:
                 tile = frame[y0:y0 + tile_h, x0:x0 + tile_w]
-                for detection in self._predict(tile, confidence=max(0.12, self.confidence * 0.75), imgsz=960):
+                for detection in self._predict(tile, confidence=max(0.10, self.confidence * 0.65), imgsz=960):
                     x1, y1, x2, y2 = detection.bbox
                     candidates.append(Detection(
-                        label="drone",
-                        confidence=detection.confidence,
+                        label="drone", confidence=detection.confidence,
                         bbox=(x1 + x0, y1 + y0, x2 + x0, y2 + y0),
                     ))
 
@@ -111,8 +110,43 @@ class DroneDetector(Detector):
                 kept.append(candidate)
         return kept
 
-    def detect(self, frame: Any) -> list[Detection]:
+    def _candidate_predict(self, frame: Any, candidates: list[Detection]) -> list[Detection]:
+        """Refine tiny general-YOLO aerial candidates with an enlarged crop."""
+        height, width = frame.shape[:2]
+        results: list[Detection] = []
+        for candidate in candidates:
+            if candidate.label.lower() not in {"airplane", "aircraft", "helicopter"}:
+                continue
+            x1, y1, x2, y2 = candidate.bbox
+            bw, bh = max(1.0, x2 - x1), max(1.0, y2 - y1)
+            # Generous context around tiny aerial objects, then upscale.
+            pad = max(24.0, max(bw, bh) * 2.5)
+            cx1, cy1 = max(0, int(x1 - pad)), max(0, int(y1 - pad))
+            cx2, cy2 = min(width, int(x2 + pad)), min(height, int(y2 + pad))
+            crop = frame[cy1:cy2, cx1:cx2]
+            if crop.size == 0:
+                continue
+            scale = max(1.0, 640.0 / max(crop.shape[:2]))
+            if scale > 1.0:
+                crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+
+            for detection in self._predict(crop, confidence=0.10, imgsz=640):
+                dx1, dy1, dx2, dy2 = detection.bbox
+                inv = 1.0 / scale
+                mapped = (dx1 * inv + cx1, dy1 * inv + cy1, dx2 * inv + cx1, dy2 * inv + cy1)
+                results.append(Detection(label="drone", confidence=detection.confidence, bbox=mapped))
+        return results
+
+    def detect(self, frame: Any, aerial_candidates: list[Detection] | None = None) -> list[Detection]:
+        # First try the full frame, then overlapping tiles.
         detections = self._predict(frame, imgsz=960)
         if detections:
             return detections
-        return self._tiled_predict(frame)
+        detections = self._tiled_predict(frame)
+        if detections:
+            return detections
+        # Finally, use the general detector's aerial localization as a
+        # candidate generator. This is the important tiny-drone fallback.
+        if aerial_candidates:
+            return self._candidate_predict(frame, aerial_candidates)
+        return []
