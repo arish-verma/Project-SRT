@@ -5,6 +5,10 @@ __pycache__/
 .env
 storage/events/*
 !storage/events/.gitkeep
+storage/uploads/*
+!storage/uploads/.gitkeep
+*.pt
+*.onnx
 models/*.pt
 models/*.onnx
 *.log
