@@ -1,7 +1,13 @@
 name: SRT CI
+
 on:
   push:
   pull_request:
+
+concurrency:
+  group: srt-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   backend:
     runs-on: ubuntu-latest
@@ -10,13 +16,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install -r backend/requirements.txt
+      # The unit/API suite does not load YOLO weights, so keep CI lightweight.
+      - run: pip install -r backend/requirements-ci.txt
       - run: PYTHONPATH=backend pytest -q backend/tests
+
   frontend:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-      - run: cd frontend && npm install && npm run build
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: cd frontend && npm ci && npm run build
