@@ -2,11 +2,13 @@ from datetime import datetime
 from enum import Enum
 from pydantic import BaseModel, Field
 
+
 class CameraType(str, Enum):
     LOCAL = "LOCAL"
     WEBCAM = "WEBCAM"
     RTSP = "RTSP"
     HTTP = "HTTP"
+
 
 class CameraStatus(str, Enum):
     OFFLINE = "OFFLINE"
@@ -14,17 +16,22 @@ class CameraStatus(str, Enum):
     ONLINE = "ONLINE"
     ERROR = "ERROR"
 
+
 class CameraCreate(BaseModel):
+    # Optional for convenience; SRT generates a stable CAM-* identifier when omitted.
+    camera_id: str | None = Field(default=None, min_length=1, max_length=100)
     name: str = Field(min_length=1, max_length=100)
     source: str = Field(min_length=1, max_length=2048)
     location: str = Field(default="", max_length=200)
     enabled: bool = True
+
 
 class CameraUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     source: str | None = Field(default=None, min_length=1, max_length=2048)
     location: str | None = Field(default=None, max_length=200)
     enabled: bool | None = None
+
 
 class Camera(BaseModel):
     camera_id: str
