@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
-from pydantic import BaseModel, Field
-
+from typing import Any
+from pydantic import BaseModel, Field, ConfigDict
 
 class Severity(str, Enum):
     INFO = "INFO"
@@ -10,61 +10,50 @@ class Severity(str, Enum):
     HIGH = "HIGH"
     CRITICAL = "CRITICAL"
 
-
-class AlertState(str, Enum):
+class AlertStatus(str, Enum):
     NEW = "NEW"
     ACKNOWLEDGED = "ACKNOWLEDGED"
     RESOLVED = "RESOLVED"
     DISMISSED = "DISMISSED"
 
+class EventType(str, Enum):
+    DETECTION = "DETECTION"
+    INTRUSION = "INTRUSION"
+    LOITERING = "LOITERING"
+    ANPR = "ANPR"
+    FACE_MATCH = "FACE_MATCH"
+    NIGHT_MOVEMENT = "NIGHT_MOVEMENT"
+    SUSPICIOUS_ACTIVITY = "SUSPICIOUS_ACTIVITY"
 
-class Camera(BaseModel):
-    camera_id: str
+class ObjectRef(BaseModel):
+    type: str
+    track_id: int | None = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+class ZoneRef(BaseModel):
+    id: str
     name: str
-    source: str
-    location: str | None = None
-    enabled: bool = True
 
+class EvidenceRef(BaseModel):
+    thumbnail: str | None = None
+    video_clip: str | None = None
 
-class Detection(BaseModel):
-    object_type: str
-    confidence: float = Field(ge=0, le=1)
-    bbox: tuple[float, float, float, float]
-
-
-class Track(BaseModel):
-    track_id: int
-    object_type: str
-    confidence: float = Field(ge=0, le=1)
-    bbox: tuple[float, float, float, float]
-
-
-class Zone(BaseModel):
-    zone_id: str
-    name: str
-    polygon: list[tuple[float, float]]
-    restricted: bool = True
-    severity: Severity = Severity.HIGH
-
-
-class Event(BaseModel):
+class SRTEvent(BaseModel):
+    model_config = ConfigDict(use_enum_values=True)
     event_id: str
     camera_id: str
-    timestamp: datetime
-    event_type: str
-    severity: Severity
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    event_type: EventType
+    severity: Severity = Severity.INFO
     confidence: float = Field(ge=0, le=1)
-    risk_score: int = Field(ge=0, le=100)
-    objects: list[dict] = []
-    zone: dict | None = None
-    location: dict | None = None
-    evidence: dict | None = None
-    metadata: dict = {}
+    risk_score: int = Field(default=0, ge=0, le=100)
+    objects: list[ObjectRef] = Field(default_factory=list)
+    zone: ZoneRef | None = None
+    location: dict[str, Any] = Field(default_factory=dict)
+    evidence: EvidenceRef = Field(default_factory=EvidenceRef)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
-
-class Alert(BaseModel):
-    alert_id: str
-    event_id: str
-    state: AlertState = AlertState.NEW
-    severity: Severity
-    created_at: datetime
+class HealthResponse(BaseModel):
+    status: str
+    service: str
+    version: str

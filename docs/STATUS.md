@@ -1,26 +1,17 @@
-# Project Status
+# Phase 0 status
 
-## Current milestone
-Phase 0 — foundation initialized.
+## Completed in `feat/phase0-foundation`
+- FastAPI application with versioned API prefix.
+- Environment configuration through Pydantic Settings and `.env` template.
+- Structured application logging setup.
+- Canonical SRT event, severity, alert and object contracts.
+- Replaceable `Detector`, `Tracker`, `EventEngine` and `VideoSource` interfaces.
+- OpenCV video-source implementation supporting local files, webcam indices and RTSP/HTTP-style sources.
+- Root and health endpoint tests.
+- Python dependency manifest and Git ignore rules.
 
-## Completed
-- Repository initialized.
-- Canonical product context documented.
-- Architecture principles documented.
-- Agent constitution documented.
+## Validation
+The repository connector can create and inspect source files but cannot execute the Python environment. Tests are therefore committed and must be run locally/CI before calling the foundation validated.
 
-## In progress
-- Backend foundation.
-- Domain contracts for cameras, detections, tracks, zones and events.
-- Model adapter interfaces.
-
-## Next
-1. Backend health/config foundation.
-2. Video-source abstraction.
-3. Detector/tracker adapters.
-4. Zone and intrusion engine.
-5. Event/alert/evidence services.
-6. Frontend dashboard.
-
-## Known limitations
-No production model has been selected or benchmarked yet. RTSP, detection and tracking require hardware/model validation before performance claims.
+## Next milestone
+Camera management + video processing service, followed by model research/selection and concrete detection/tracking adapters.
