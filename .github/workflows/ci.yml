@@ -15,10 +15,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.14'
       # The unit/API suite does not load YOLO weights, so keep CI lightweight.
-      - run: pip install -r backend/requirements-ci.txt
-      - run: PYTHONPATH=backend pytest -q backend/tests
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r backend/requirements-ci.txt
+      - run: PYTHONPATH=backend python -m pytest -q backend/tests
 
   frontend:
     runs-on: ubuntu-latest
