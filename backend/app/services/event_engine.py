@@ -16,22 +16,27 @@ class RuleEventEngine:
   if len(history)<3:return None
   _,x0,y0=history[0];_,x1,y1=history[-1];dx,dy=x1-x0,y1-y0
   if math.hypot(dx,dy)<8:return 'STATIONARY'
-  h='EAST' if dx>0 else 'WEST';v='SOUTH' if dy>0 else 'NORTH'
-  return v if abs(dx)<abs(dy)*.5 else h if abs(dy)<abs(dx)*.5 else f'{v}-{h}'
+  h='EAST' if dx>0 else 'WEST';v='SOUTH' if dy>0 else 'NORTH';return v if abs(dx)<abs(dy)*.5 else h if abs(dy)<abs(dx)*.5 else f'{v}-{h}'
  @staticmethod
  def _movement_distance(history):return 0.0 if len(history)<2 else sum(math.hypot(history[i][1]-history[i-1][1],history[i][2]-history[i-1][2]) for i in range(1,len(history)))
  def _new_event(self,camera_id,now,event_type,severity,confidence,risk,message,object_type='person',track_id=None,zone=None,metadata=None):return EventRecord(event_id=f'EVT-{uuid.uuid4().hex[:10].upper()}',camera_id=camera_id,timestamp=datetime.fromtimestamp(now,tz=timezone.utc),event_type=event_type,severity=severity,confidence=confidence,risk_score=min(max(risk,0),100),object_type=object_type,track_id=track_id,zone_id=zone.zone_id if zone else None,zone_name=zone.name if zone else None,message=message,metadata=metadata or {})
  def _allow(self,key,now,cooldown=None):
   if now-self._last_event.get(key,0)<(cooldown if cooldown is not None else self.cooldown_seconds):return False
   self._last_event[key]=now;return True
+ def _fight_events(self,camera_id,persons,now,width,height):
+  events=[]
+  for i,a in enumerate(persons):
+   for b in persons[i+1:]:
+    dist=math.hypot(a.center[0]-b.center[0],a.center[1]-b.center[1]);ah=max(10.0,a.bbox[3]-a.bbox[1]);bh=max(10.0,b.bbox[3]-b.bbox[1]);proximity=dist/max(ah,bh)
+    ma=self._movement_distance(self._history[(camera_id,a.track_id)]);mb=self._movement_distance(self._history[(camera_id,b.track_id)])
+    if proximity<=1.8 and ma>18 and mb>18 and ma+mb>max(width,height)*.18 and self._allow((camera_id,'fight',min(a.track_id,b.track_id),max(a.track_id,b.track_id)),now,18):
+     conf=min(.95,.58+.12*min(1,ma/70)+.12*min(1,mb/70)+.10*max(0,1-proximity/1.8))
+     events.append(self._new_event(camera_id,now,'FIGHT_SUSPECTED',EventSeverity.HIGH,conf,84,'Potential physical altercation detected; operator review recommended','person',a.track_id,None,{'factors':['two people in close proximity','rapid movement','contextual anomaly'],'related_track_ids':[a.track_id,b.track_id],'proximity_ratio':round(proximity,2),'movement_a':round(ma,1),'movement_b':round(mb,1),'note':'Anomaly cue only; operator review recommended.'}))
+  return events
  def evaluate(self,camera_id,tracks,zones,frame_shape,timestamp=None):
   now=timestamp or time.time();height,width=frame_shape[:2];events=[];current=set();night=self._is_night(now);persons=[t for t in tracks if t.label=='person']
   for t in tracks:self._history[(camera_id,t.track_id)].append((now,t.center[0],t.center[1]))
-  if len(persons)>=2:
-   for i,a in enumerate(persons):
-    for b in persons[i+1:]:
-     dist=math.hypot(a.center[0]-b.center[0],a.center[1]-b.center[1]);ma=self._movement_distance(self._history[(camera_id,a.track_id)]);mb=self._movement_distance(self._history[(camera_id,b.track_id)])
-     if dist<max(width,height)*.11 and ma+mb>max(width,height)*.65 and self._allow((camera_id,'fight',min(a.track_id,b.track_id),max(a.track_id,b.track_id)),now,20):events.append(self._new_event(camera_id,now,'FIGHT_SUSPECTED',EventSeverity.HIGH,max(a.confidence,b.confidence),82,'Potential physical altercation detected; operator review recommended','person',a.track_id,None,{'factors':['two people in close proximity','rapid movement','contextual anomaly'],'related_track_ids':[a.track_id,b.track_id],'note':'Anomaly cue only; operator review recommended.'}))
+  events.extend(self._fight_events(camera_id,persons,now,width,height))
   for zone in zones:
    if not zone.enabled or zone.camera_id!=camera_id:continue
    persons_inside=0
@@ -62,7 +67,8 @@ class RuleEventEngine:
   for d in detections:
    best=None;score=.2
    for tid,bbox in prev.items():
-    if tid not in used and self._iou(bbox,d.bbox)>score:best,score=tid,self._iou(bbox,d.bbox)
+    s=self._iou(bbox,d.bbox)
+    if tid not in used and s>score:best,score=tid,s
    tid=best or self._next_drone_id[camera_id];self._next_drone_id[camera_id]=max(self._next_drone_id[camera_id],tid+1);used.add(tid);out.append((tid,d))
   self._drone_tracks[camera_id]={tid:d.bbox for tid,d in out};return out
  def evaluate_drones(self,camera_id,detections,zones,frame_shape,timestamp=None):
