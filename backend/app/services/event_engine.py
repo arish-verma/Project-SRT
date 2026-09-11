@@ -75,6 +75,10 @@ class RuleEventEngine:
   now=timestamp or time.time();height,width=frame_shape[:2];events=[];rz=next((z for z in zones if z.enabled and z.camera_id==camera_id and z.zone_type.value=='RESTRICTED'),None)
   for tid,d in self._assign_drone_tracks(camera_id,detections):
    x1,y1,x2,y2=d.bbox;inside=bool(rz and self._contains_point(rz,(x1+x2)/2,(y1+y2)/2,width,height))
-   if not self._allow((camera_id,'drone',tid),now,10):continue
-   risk=90 if inside else 60;events.append(self._new_event(camera_id,now,'DRONE_DETECTED',EventSeverity.CRITICAL if inside else EventSeverity.MEDIUM,d.confidence,risk,'Drone detected in restricted zone' if inside else 'Drone detected','drone',None,rz if inside else None,{'drone_track_id':tid,'bbox':list(d.bbox),'factors':['drone detection']+(['restricted zone'] if inside else [])}))
+   if not self._allow((camera_id,'aerial_object',tid),now,10):continue
+   risk=90 if inside else 70
+   factors=['aerial object detected']+(['restricted zone'] if inside else [])
+   message=f'Aerial object detected in camera {camera_id} at {datetime.fromtimestamp(now,tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")}'
+   if inside:message+=' — restricted zone'
+   events.append(self._new_event(camera_id,now,'AERIAL_OBJECT_DETECTED',EventSeverity.CRITICAL if inside else EventSeverity.HIGH,d.confidence,risk,message,'aerial_object',None,rz if inside else None,{'aerial_track_id':tid,'bbox':list(d.bbox),'camera_id':camera_id,'detected_at':datetime.fromtimestamp(now,tz=timezone.utc).isoformat(),'factors':factors,'note':'Aerial target normalized to one class; operator review recommended.'}))
   return events
