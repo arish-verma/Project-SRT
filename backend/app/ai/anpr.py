@@ -6,8 +6,9 @@ import cv2
 import numpy as np
 try:
     import pytesseract
-    _cmd=shutil.which('tesseract') or r'C:\Program Files\Tesseract-OCR\tesseract.exe' or r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe'
-    if os.path.exists(_cmd): pytesseract.pytesseract.tesseract_cmd=_cmd
+    _candidates=[shutil.which('tesseract'),r'C:\Program Files\Tesseract-OCR\tesseract.exe',r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe']
+    _cmd=next((p for p in _candidates if p and os.path.exists(p)),None)
+    if _cmd:pytesseract.pytesseract.tesseract_cmd=_cmd
 except Exception:
     pytesseract=None
 VEHICLES={'car','truck','bus','motorcycle'}
