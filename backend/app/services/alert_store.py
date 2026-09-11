@@ -15,7 +15,7 @@ class AlertStore:
   with self.lock,sqlite3.connect(self.path) as db:
    row=db.execute("SELECT * FROM alerts WHERE event_id=?",(event.event_id,)).fetchone()
    if row:return self._row(row)
-   titles={"INTRUSION":"Restricted Border Entered","NIGHT_MOVEMENT":"Night Movement Detected","LOITERING":"Loitering Detected","MULTI_PERSON_ACTIVITY":"Multiple-Person Activity Detected","ANOMALY_SUSPECTED":"Anomaly Detected","FIGHT_SUSPECTED":"Potential Physical Altercation","DRONE_DETECTED":"Drone Detected","ANPR_DETECTED":"ANPR Vehicle Detected"}
+   titles={"INTRUSION":"Restricted Border Entered","NIGHT_MOVEMENT":"Night Movement Detected","LOITERING":"Loitering Detected","MULTI_PERSON_ACTIVITY":"Multiple-Person Activity Detected","ANOMALY_SUSPECTED":"Anomaly Detected","FIGHT_SUSPECTED":"Potential Physical Altercation","AERIAL_OBJECT_DETECTED":"Aerial Object Detected","DRONE_DETECTED":"Aerial Object Detected","ANPR_DETECTED":"ANPR Vehicle Detected"}
    a=AlertRecord(alert_id=f"ALT-{uuid4().hex[:10].upper()}",event_id=event.event_id,camera_id=event.camera_id,created_at=datetime.now(timezone.utc),severity=event.severity,title=titles.get(event.event_type,f"{event.event_type.replace('_',' ').title()} Detected"),message=event.message)
    db.execute("INSERT INTO alerts VALUES (?,?,?,?,?,?,?,?)",(a.alert_id,a.event_id,a.camera_id,a.created_at.isoformat(),a.severity.value,a.title,a.message,a.status.value));return a
  @staticmethod
