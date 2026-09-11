@@ -91,26 +91,15 @@ class RuleEventEngine:
                 proximity = dist / max(ah, bh)
                 ma = self._movement_distance(self._history[(camera_id, a.track_id)])
                 mb = self._movement_distance(self._history[(camera_id, b.track_id)])
-                if (
-                    proximity <= 1.8
-                    and ma > 18
-                    and mb > 18
-                    and ma + mb > max(width, height) * 0.18
-                    and self._allow((camera_id, "fight", min(a.track_id, b.track_id), max(a.track_id, b.track_id)), now, 18)
-                ):
+                if proximity <= 1.8 and ma > 18 and mb > 18 and ma + mb > max(width, height) * .18 and self._allow((camera_id, "fight", min(a.track_id, b.track_id), max(a.track_id, b.track_id)), now, 18):
                     conf = min(.95, .58 + .12 * min(1, ma / 70) + .12 * min(1, mb / 70) + .10 * max(0, 1 - proximity / 1.8))
                     events.append(self._new_event(
                         camera_id, now, "FIGHT_SUSPECTED", EventSeverity.HIGH, conf, 84,
-                        "Potential physical altercation detected; operator review recommended",
-                        "person", a.track_id, None,
-                        {
-                            "factors": ["two people in close proximity", "rapid movement", "contextual anomaly"],
-                            "related_track_ids": [a.track_id, b.track_id],
-                            "proximity_ratio": round(proximity, 2),
-                            "movement_a": round(ma, 1),
-                            "movement_b": round(mb, 1),
-                            "note": "Anomaly cue only; operator review recommended.",
-                        },
+                        "Potential physical altercation detected; operator review recommended", "person", a.track_id, None,
+                        {"factors": ["two people in close proximity", "rapid movement", "contextual anomaly"],
+                         "related_track_ids": [a.track_id, b.track_id], "proximity_ratio": round(proximity, 2),
+                         "movement_a": round(ma, 1), "movement_b": round(mb, 1),
+                         "note": "Anomaly cue only; operator review recommended."},
                     ))
         return events
 
@@ -121,10 +110,8 @@ class RuleEventEngine:
         current = set()
         night = self._is_night(now)
         persons = [t for t in tracks if t.label == "person"]
-
         for t in tracks:
             self._history[(camera_id, t.track_id)].append((now, t.center[0], t.center[1]))
-
         events.extend(self._fight_events(camera_id, persons, now, width, height))
 
         for zone in zones:
@@ -143,7 +130,6 @@ class RuleEventEngine:
                 if not inside:
                     self._entered_at.pop(key, None)
                     continue
-
                 history = self._history[(camera_id, track.track_id)]
                 direction = self._direction(history)
                 dwell = max(0, now - self._entered_at.get(key, now))
@@ -158,44 +144,30 @@ class RuleEventEngine:
                     if direction and direction != "STATIONARY":
                         factors.append(f"direction {direction.lower()}")
                     severity = EventSeverity.CRITICAL if risk >= 90 else EventSeverity.HIGH if risk >= 75 else EventSeverity.MEDIUM
-                    events.append(self._new_event(
-                        camera_id, now, "INTRUSION", severity, track.confidence, risk,
-                        f"{track.label.title()} entered {zone.name}", track.label, track.track_id, zone,
-                        {"zone_type": zone.zone_type.value, "factors": factors, "night": night,
-                         "dwell_seconds": round(dwell, 1), "direction": direction},
-                    ))
-
+                    events.append(self._new_event(camera_id, now, "INTRUSION", severity, track.confidence, risk,
+                                                  f"{track.label.title()} entered {zone.name}", track.label, track.track_id, zone,
+                                                  {"zone_type": zone.zone_type.value, "factors": factors, "night": night,
+                                                   "dwell_seconds": round(dwell, 1), "direction": direction}))
                 if track.label == "person" and zone.zone_type.value == "RESTRICTED":
                     if dwell >= 30 and self._allow((camera_id, track.track_id, zone.zone_id, "loiter"), now, 15) and movement < max(width, height) * .18:
-                        events.append(self._new_event(
-                            camera_id, now, "LOITERING", EventSeverity.HIGH, track.confidence, 80,
-                            f"Person remained in {zone.name} for {int(dwell)}s with limited movement",
-                            "person", track.track_id, zone,
-                            {"dwell_seconds": round(dwell, 1), "movement_pixels": round(movement, 1),
-                             "factors": ["restricted zone", "extended dwell", "limited movement"]},
-                        ))
+                        events.append(self._new_event(camera_id, now, "LOITERING", EventSeverity.HIGH, track.confidence, 80,
+                                                      f"Person remained in {zone.name} for {int(dwell)}s with limited movement", "person", track.track_id, zone,
+                                                      {"dwell_seconds": round(dwell, 1), "movement_pixels": round(movement, 1),
+                                                       "factors": ["restricted zone", "extended dwell", "limited movement"]}))
                     if night and self._allow((camera_id, track.track_id, zone.zone_id, "night"), now, 20):
-                        events.append(self._new_event(
-                            camera_id, now, "NIGHT_MOVEMENT", EventSeverity.HIGH, track.confidence, 75,
-                            f"Night-time movement detected in {zone.name}", "person", track.track_id, zone,
-                            {"factors": ["night-time", "restricted zone"], "direction": direction},
-                        ))
+                        events.append(self._new_event(camera_id, now, "NIGHT_MOVEMENT", EventSeverity.HIGH, track.confidence, 75,
+                                                      f"Night-time movement detected in {zone.name}", "person", track.track_id, zone,
+                                                      {"factors": ["night-time", "restricted zone"], "direction": direction}))
                     if len(history) >= 8 and movement > max(width, height) * .75 and self._allow((camera_id, track.track_id, zone.zone_id, "anomaly"), now, 20):
-                        events.append(self._new_event(
-                            camera_id, now, "ANOMALY_SUSPECTED", EventSeverity.HIGH, track.confidence, 78,
-                            f"Unusual movement pattern detected in {zone.name}", "person", track.track_id, zone,
-                            {"factors": ["unusual movement speed", "restricted zone"],
-                             "movement_pixels": round(movement, 1), "direction": direction,
-                             "note": "Operator-assistance signal, not proof of intent."},
-                        ))
-
+                        events.append(self._new_event(camera_id, now, "ANOMALY_SUSPECTED", EventSeverity.HIGH, track.confidence, 78,
+                                                      f"Unusual movement pattern detected in {zone.name}", "person", track.track_id, zone,
+                                                      {"factors": ["unusual movement speed", "restricted zone"],
+                                                       "movement_pixels": round(movement, 1), "direction": direction,
+                                                       "note": "Operator-assistance signal, not proof of intent."}))
             if persons_inside >= 3 and self._allow((camera_id, zone.zone_id, "group"), now, 20):
-                events.append(self._new_event(
-                    camera_id, now, "MULTI_PERSON_ACTIVITY", EventSeverity.HIGH, .9, 78,
-                    f"Multiple people detected in {zone.name}", "person", None, zone,
-                    {"person_count": persons_inside, "factors": ["restricted zone", "multiple people"]},
-                ))
-
+                events.append(self._new_event(camera_id, now, "MULTI_PERSON_ACTIVITY", EventSeverity.HIGH, .9, 78,
+                                              f"Multiple people detected in {zone.name}", "person", None, zone,
+                                              {"person_count": persons_inside, "factors": ["restricted zone", "multiple people"]}))
         self._inside = current
         return events
 
@@ -228,12 +200,7 @@ class RuleEventEngine:
         return out
 
     def evaluate_drones(self, camera_id, detections, zones, frame_shape, timestamp=None, scan_id=None):
-        """Generate alerts only for a *classified drone*.
-
-        Airplanes, helicopters and birds remain visible in the perception layer,
-        but they are not security alerts. A drone must also survive two
-        specialist scans before an alert is emitted, reducing one-frame noise.
-        """
+        """Alert only on a classified drone after two specialist scans."""
         now = timestamp or time.time()
         if scan_id is not None and self._last_drone_scan.get(camera_id) == scan_id:
             return []
@@ -247,27 +214,20 @@ class RuleEventEngine:
             self._drone_tracks[camera_id] = {}
             return []
 
-        restricted = next(
-            (z for z in zones if z.enabled and z.camera_id == camera_id and z.zone_type.value == "RESTRICTED"),
-            None,
-        )
+        restricted = next((z for z in zones if z.enabled and z.camera_id == camera_id and z.zone_type.value == "RESTRICTED"), None)
         events = []
         current_confirmation = {}
-
         for track_id, detection in self._assign_drone_tracks(camera_id, drones):
-            previous = self._drone_confirmation[camera_id].get(track_id, 0)
-            count = previous + 1
+            count = self._drone_confirmation[camera_id].get(track_id, 0) + 1
             current_confirmation[track_id] = count
             if count < 2:
                 continue
-
             x1, y1, x2, y2 = detection.bbox
             center_x, center_y = (x1 + x2) / 2, (y1 + y2) / 2
             inside = bool(restricted and self._contains_point(restricted, center_x, center_y, width, height))
             if not self._allow((camera_id, "drone", track_id), now, 30):
                 continue
-
-            risk = 92 if inside else 82
+            risk = 90 if inside else 70
             severity = EventSeverity.CRITICAL if inside else EventSeverity.HIGH
             factors = ["classified drone", "two-scan confirmation"]
             if inside:
@@ -275,29 +235,13 @@ class RuleEventEngine:
             message = f"Drone detected in camera {camera_id}"
             if inside:
                 message += " — restricted zone"
-
             events.append(self._new_event(
-                camera_id,
-                now,
-                "DRONE_DETECTED",
-                severity,
-                detection.confidence,
-                risk,
-                message,
-                "drone",
-                None,
-                restricted if inside else None,
-                {
-                    "flying_class": "drone",
-                    "drone_track_id": track_id,
-                    "bbox": list(detection.bbox),
-                    "camera_id": camera_id,
-                    "detected_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
-                    "factors": factors,
-                    "confirmation_scans": count,
-                    "note": "Model classification cue; operator review recommended.",
-                },
+                camera_id, now, "DRONE_DETECTED", severity, detection.confidence, risk, message,
+                "drone", None, restricted if inside else None,
+                {"flying_class": "drone", "drone_track_id": track_id, "bbox": list(detection.bbox),
+                 "camera_id": camera_id, "detected_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+                 "factors": factors, "confirmation_scans": count,
+                 "note": "Model classification cue; operator review recommended."},
             ))
-
         self._drone_confirmation[camera_id] = current_confirmation
         return events
