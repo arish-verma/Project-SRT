@@ -5,13 +5,13 @@ router=APIRouter(prefix='/search',tags=['search'])
 def parse_query(q):
  text=q.lower().strip();f={}
  if any(w in text for w in ('person','people','human')):f['object_type']='person'
- elif 'drone' in text:f['object_type']='drone'
+ elif any(w in text for w in ('aerial object','aerial','aircraft','airplane','helicopter','drone')):f['object_type']='aerial_object'
  elif any(w in text for w in ('vehicle','car','truck','bus','motorcycle')):f['vehicle']=True
  if any(w in text for w in ('restricted','intrusion','fence')):f['event_type']='INTRUSION'
  elif any(w in text for w in ('loiter','dwell')):f['event_type']='LOITERING'
  elif any(w in text for w in ('night','night-time','nighttime')):f['event_type']='NIGHT_MOVEMENT'
  elif any(w in text for w in ('fight','fighting','altercation','physical')):f['event_type']='FIGHT_SUSPECTED'
- elif 'drone' in text:f['event_type']='DRONE_DETECTED'
+ elif any(w in text for w in ('aerial object','aerial','aircraft','airplane','helicopter','drone')):f['event_type']='AERIAL_OBJECT_DETECTED'
  elif any(w in text for w in ('multiple people','group','crowd')):f['event_type']='MULTI_PERSON_ACTIVITY'
  elif any(w in text for w in ('anomaly','unusual','suspicious')):f['event_type']='ANOMALY_SUSPECTED'
  m=re.search(r'camera\s*(\d+)',text)
