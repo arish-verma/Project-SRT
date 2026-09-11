@@ -3,8 +3,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import cv2
-
 from app.ai.interfaces import Detection, Detector
 from app.core.config import settings
 
@@ -13,13 +11,7 @@ FLYING_LABELS = {"drone", "airplane", "helicopter", "bird"}
 
 
 class DroneDetector(Detector):
-    """Strict model-driven detector/classifier for airborne objects.
-
-    The old pipeline normalized every result to ``aerial_object`` and included
-    a geometry heuristic. That made class-specific alerts impossible and could
-    turn unrelated detections into false aerial targets. This implementation
-    accepts only classes emitted by a trained flying-object model.
-    """
+    """Strict model-driven detector/classifier for airborne objects."""
 
     def __init__(self, model_path: str, confidence: float = 0.20) -> None:
         self.model_path = model_path
@@ -39,15 +31,9 @@ class DroneDetector(Detector):
         value = label.strip().lower().replace("_", " ").replace("-", " ")
         value = " ".join(value.split())
         return {
-            "drone": "drone",
-            "uav": "drone",
-            "u a v": "drone",
-            "airplane": "airplane",
-            "aircraft": "airplane",
-            "aeroplane": "airplane",
-            "plane": "airplane",
-            "helicopter": "helicopter",
-            "bird": "bird",
+            "drone": "drone", "uav": "drone", "u a v": "drone",
+            "airplane": "airplane", "aircraft": "airplane", "aeroplane": "airplane", "plane": "airplane",
+            "helicopter": "helicopter", "bird": "bird",
         }.get(value)
 
     @staticmethod
@@ -133,9 +119,6 @@ class DroneDetector(Detector):
             return []
         model = self._load_fallback() if use_fallback else self._load()
         confidence = self.fallback_confidence if use_fallback else self.confidence
-
-        # Two-by-two overlapping tiles. They are a fallback for small distant
-        # targets, not the default path, so normal webcam processing stays fast.
         tw, th = max(160, int(w * 0.68)), max(160, int(h * 0.68))
         xs = [0, max(0, w - tw)]
         ys = [0, max(0, h - th)]
@@ -149,36 +132,38 @@ class DroneDetector(Detector):
                                          bbox=(x1 + x0, y1 + y0, x2 + x0, y2 + y0)))
         return self._nms(out)
 
-    def detect(self, frame: Any, camera_id: str | None = None) -> list[Detection]:
-        """Classify airborne objects without heuristic guesses."""
+    def detect(self, frame: Any, camera_id: str | None = None, allow_tiled: bool = False) -> list[Detection]:
+        """Classify airborne objects without heuristic guesses.
+
+        ``allow_tiled`` is deliberately controlled by the pipeline so a clear
+        CCTV scene does not trigger four extra GPU inferences on every scan.
+        """
         del camera_id
 
-        # Primary model: Javvanny YOLOv8m. It explicitly distinguishes
-        # Drone/Airplane/Helicopter/Bird.
         try:
             detections = self._predict(frame, imgsz=960)
             if detections:
                 return detections
-            # Small-target rescue only after a clean full-frame miss.
-            try:
-                tiled = self._tiled_predict(frame, use_fallback=False)
-                if tiled:
-                    return tiled
-            except Exception:
-                logger.exception("Primary tiled flying-object inference failed")
+            if allow_tiled:
+                try:
+                    tiled = self._tiled_predict(frame, use_fallback=False)
+                    if tiled:
+                        return tiled
+                except Exception:
+                    logger.exception("Primary tiled flying-object inference failed")
             return []
         except Exception:
             logger.exception("Primary flying-object inference failed; using fallback")
 
-        # Fallback: AeroYOLO distinguishes aircraft/drone/helicopter.
         try:
             detections = self._predict_model(self._load_fallback(), frame, self.fallback_confidence, 960)
             if detections:
                 return detections
-            return self._tiled_predict(frame, use_fallback=True)
+            if allow_tiled:
+                return self._tiled_predict(frame, use_fallback=True)
         except Exception:
             logger.exception("Fallback flying-object inference failed")
-            return []
+        return []
 
     def status(self) -> dict[str, Any]:
         return {
