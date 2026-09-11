@@ -71,7 +71,7 @@ class VideoProcessor:
  def process_frame(self,camera_id,packet):
   _,tracks=self.pipeline.process(camera_id,packet);snapshot=self.frame_store.get(camera_id)
   if snapshot:self._record_buffers[camera_id].append((packet.timestamp,snapshot.jpeg))
-  zones=self.zone_manager.list(camera_id);events=self.event_engine.evaluate(camera_id,tracks,zones,packet.frame.shape,packet.timestamp);events.extend(self.event_engine.evaluate_drones(camera_id,self.pipeline.last_drone_detections,zones,packet.frame.shape,packet.timestamp));root=Path(settings.event_storage_path)
+  zones=self.zone_manager.list(camera_id);events=self.event_engine.evaluate(camera_id,tracks,zones,packet.frame.shape,packet.timestamp);events.extend(self.event_engine.evaluate_drones(camera_id,self.pipeline.last_drone_detections.get(camera_id,[]),zones,packet.frame.shape,packet.timestamp));root=Path(settings.event_storage_path)
   for event in events:
    evidence_path=None;clip_path=None
    if snapshot:
