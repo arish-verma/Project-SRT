@@ -36,7 +36,10 @@ def test_drone_gets_stable_track_id_and_restricted_risk():
     z = zone()
     detection = Detection(label="drone", confidence=0.9, bbox=(40, 40, 60, 60))
     now = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc).timestamp()
-    events = engine.evaluate_drones("CAM-1", [detection], [z], (100, 100, 3), now)
+
+    assert engine.evaluate_drones("CAM-1", [detection], [z], (100, 100, 3), now, scan_id=1) == []
+    events = engine.evaluate_drones("CAM-1", [detection], [z], (100, 100, 3), now + 1, scan_id=2)
+
     assert len(events) == 1
     assert events[0].event_type == "DRONE_DETECTED"
     assert events[0].risk_score == 90
