@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -52,6 +53,15 @@ class VideoProcessor:
             thread.start()
             return True
 
+    def start_all(self, camera_ids: list[str] | None = None) -> int:
+        """Start all configured cameras concurrently so a large channel set can be armed with one action."""
+        ids = camera_ids if camera_ids is not None else [c.camera_id for c in self.camera_manager.list() if c.enabled]
+        if not ids:
+            return 0
+        with ThreadPoolExecutor(max_workers=min(32, len(ids)), thread_name_prefix="srt-start-all") as pool:
+            results = list(pool.map(self.start, ids))
+        return sum(1 for result in results if result)
+
     def stop(self, camera_id: str) -> bool:
         with self._lock:
             state = self._workers.get(camera_id)
@@ -60,10 +70,12 @@ class VideoProcessor:
             state.stop_event.set()
             return True
 
-    def stop_all(self) -> None:
+    def stop_all(self) -> int:
         with self._lock:
-            for state in self._workers.values():
+            states = list(self._workers.values())
+            for state in states:
                 state.stop_event.set()
+            return len(states)
 
     def is_running(self, camera_id: str) -> bool:
         with self._lock:
