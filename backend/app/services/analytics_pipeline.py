@@ -20,18 +20,28 @@ class AnalyticsPipeline:
         with self._tracker_lock:
             if camera_id not in self._trackers:self._trackers[camera_id]=ByteTrackTracker(self.model_path,self.confidence)
             return self._trackers[camera_id]
+    @staticmethod
+    def _iou(a,b):
+        ax1,ay1,ax2,ay2=a;bx1,by1,bx2,by2=b;ix1,iy1,ix2,iy2=max(ax1,bx1),max(ay1,by1),min(ax2,bx2),min(ay2,by2);inter=max(0,ix2-ix1)*max(0,iy2-iy1)
+        if inter<=0:return 0.0
+        return inter/max(max(0,ax2-ax1)*max(0,ay2-ay1)+max(0,bx2-bx1)*max(0,by2-by1)-inter,1e-6)
+    def _merge_anpr(self,camera_id,new):
+        old=self.last_anpr.get(camera_id,[]);merged=[]
+        for item in new:
+            best=max((p for p in old if p.get('vehicle_type')==item.get('vehicle_type')),key=lambda p:self._iou(item['bbox'],p.get('bbox',[0,0,0,0])),default=None)
+            if best and self._iou(item['bbox'],best.get('bbox',[0,0,0,0]))>=.15 and not item.get('plate_text') and best.get('plate_text'):
+                item=dict(item);item['plate_text']=best['plate_text'];item['plate_bbox']=best.get('plate_bbox');item['status']='READ'
+            merged.append(item)
+        return merged
     def process(self,camera_id:str,packet:Any):
-        frame=packet.frame
-        detections=self.last_detections.get(camera_id,[]);tracks=self.last_tracks.get(camera_id,[])
-        # General YOLO is the expensive part of the live loop. Reuse the latest result
-        # between inference frames while the camera feed itself continues at full rate.
+        frame=packet.frame;detections=self.last_detections.get(camera_id,[]);tracks=self.last_tracks.get(camera_id,[])
         if packet.frame_index%self.detection_interval==0:
             try:
                 with self._inference_lock:detections=self.detector.detect(frame);tracks=self._tracker_for(camera_id).update(detections,frame)
             except Exception:logger.exception('Analytics inference failed for %s',camera_id)
         self.last_detections[camera_id]=detections;self.last_tracks[camera_id]=tracks
         if packet.frame_index%self.anpr_scan_interval==0:
-            try:self.last_anpr[camera_id]=self.anpr.scan(frame,detections,camera_id=camera_id,timestamp=packet.timestamp)
+            try:self.last_anpr[camera_id]=self._merge_anpr(camera_id,self.anpr.scan(frame,detections,camera_id=camera_id,timestamp=packet.timestamp))
             except Exception:logger.exception('ANPR failed for %s',camera_id);self.last_anpr[camera_id]=[]
         if packet.frame_index%self.face_scan_interval==0:
             try:self.last_faces[camera_id]=self.face_service.detect(frame)
@@ -48,8 +58,6 @@ class AnalyticsPipeline:
         for d in detections:
             if d.label.lower() in AERIAL_LABELS:continue
             x1,y1,x2,y2=map(int,d.bbox);cv2.rectangle(annotated,(x1,y1),(x2,y2),(255,255,255),2);cv2.putText(annotated,f'{d.label} {d.confidence:.0%}',(x1,max(18,y1-6)),cv2.FONT_HERSHEY_SIMPLEX,.5,(255,255,255),1,cv2.LINE_AA)
-        # Never expose the generic track number as the aerial classification. Aerial
-        # detections get their own operator-facing label and box.
         for t in tracks:
             if t.label.lower() in AERIAL_LABELS:continue
             x1,y1,x2,y2=map(int,t.bbox);cv2.putText(annotated,f'#{t.track_id}',(x1,min(annotated.shape[0]-5,y2+18)),cv2.FONT_HERSHEY_SIMPLEX,.55,(255,255,255),2,cv2.LINE_AA)
