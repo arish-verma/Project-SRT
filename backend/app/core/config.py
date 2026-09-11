@@ -36,10 +36,12 @@ class Settings(BaseSettings):
     bird_min_confidence: float = 0.65
     flying_model_imgsz: int = 960
 
-    # Reject implausible/background candidates before temporal voting.
-    flying_min_box_px: int = 10
-    flying_max_box_area_ratio: float = 0.06
-    flying_max_center_y_ratio: float = 0.82
+    # Geometry gate: allow a close helicopter/aircraft to occupy a meaningful
+    # part of frame; temporal + motion gates provide the stronger false-positive
+    # protection for ordinary webcam scenes.
+    flying_min_box_px: int = 8
+    flying_max_box_area_ratio: float = 0.18
+    flying_max_center_y_ratio: float = 0.85
 
     # Temporal object lock: a class must agree across multiple specialist
     # scans and the same physical region must persist between scans.
