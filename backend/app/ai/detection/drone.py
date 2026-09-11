@@ -9,23 +9,16 @@ from app.ai.interfaces import Detection, Detector
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
-
-# Canonical labels exposed by SRT. The detector may use different spellings,
-# but the rest of the application always receives one of these values.
 FLYING_LABELS = {"drone", "airplane", "helicopter", "bird"}
 
 
 class DroneDetector(Detector):
-    """Specialist flying-object detector/classifier.
+    """Strict model-driven detector/classifier for airborne objects.
 
-    The previous implementation normalized every specialist result to
-    ``aerial_object`` and also had a heuristic that could turn unrelated
-    detections into aerial objects. That made it impossible to distinguish a
-    drone from an aircraft and was the source of false positives.
-
-    This implementation is intentionally model-driven: only a supported class
-    emitted by a trained flying-object model can become a flying detection.
-    No geometry-only or person-derived heuristic is used.
+    The old pipeline normalized every result to ``aerial_object`` and included
+    a geometry heuristic. That made class-specific alerts impossible and could
+    turn unrelated detections into false aerial targets. This implementation
+    accepts only classes emitted by a trained flying-object model.
     """
 
     def __init__(self, model_path: str, confidence: float = 0.20) -> None:
@@ -45,7 +38,7 @@ class DroneDetector(Detector):
     def _canonical_label(label: str) -> str | None:
         value = label.strip().lower().replace("_", " ").replace("-", " ")
         value = " ".join(value.split())
-        aliases = {
+        return {
             "drone": "drone",
             "uav": "drone",
             "u a v": "drone",
@@ -55,8 +48,7 @@ class DroneDetector(Detector):
             "plane": "airplane",
             "helicopter": "helicopter",
             "bird": "bird",
-        }
-        return aliases.get(value)
+        }.get(value)
 
     @staticmethod
     def _threshold(label: str) -> float:
@@ -76,7 +68,6 @@ class DroneDetector(Detector):
             weights = model_path
         else:
             from huggingface_hub import hf_hub_download
-
             weights = hf_hub_download(repo_id=model_path, filename=filename)
         model = YOLO(weights)
         model.to(self._device)
@@ -85,9 +76,10 @@ class DroneDetector(Detector):
 
     def _load(self) -> Any:
         if self._model is None:
+            if self._primary_error:
+                raise RuntimeError(self._primary_error)
             try:
                 self._model = self._load_model(self.model_path, self.model_file)
-                self._primary_error = None
             except Exception as exc:
                 self._primary_error = str(exc)
                 logger.exception("Primary flying-object model failed to load")
@@ -96,9 +88,10 @@ class DroneDetector(Detector):
 
     def _load_fallback(self) -> Any:
         if self._fallback_model is None:
+            if self._fallback_error:
+                raise RuntimeError(self._fallback_error)
             try:
                 self._fallback_model = self._load_model(self.fallback_model_path, self.fallback_model_file)
-                self._fallback_error = None
             except Exception as exc:
                 self._fallback_error = str(exc)
                 logger.exception("Fallback flying-object model failed to load")
@@ -118,30 +111,17 @@ class DroneDetector(Detector):
         return inter / max(aa + ab - inter, 1e-6)
 
     def _predict_model(self, model: Any, frame: Any, confidence: float, imgsz: int = 960) -> list[Detection]:
-        result = model.predict(
-            source=frame,
-            conf=confidence,
-            imgsz=imgsz,
-            device=self._device,
-            verbose=False,
-        )[0]
+        result = model.predict(source=frame, conf=confidence, imgsz=imgsz, device=self._device, verbose=False)[0]
         names = result.names
         out: list[Detection] = []
         if result.boxes is None:
             return out
-
         for box, conf, cls in zip(result.boxes.xyxy, result.boxes.conf, result.boxes.cls):
             label = self._canonical_label(str(names[int(cls)]))
             score = float(conf)
             if label is None or score < self._threshold(label):
                 continue
-            out.append(
-                Detection(
-                    label=label,
-                    confidence=score,
-                    bbox=tuple(float(v) for v in box.tolist()),
-                )
-            )
+            out.append(Detection(label=label, confidence=score, bbox=tuple(float(v) for v in box.tolist())))
         return self._nms(out)
 
     def _predict(self, frame: Any, imgsz: int = 960) -> list[Detection]:
@@ -151,77 +131,54 @@ class DroneDetector(Detector):
         h, w = frame.shape[:2]
         if w < 160 or h < 160:
             return []
-
         model = self._load_fallback() if use_fallback else self._load()
         confidence = self.fallback_confidence if use_fallback else self.confidence
 
-        # Four overlapping tiles are only used as a fallback for small targets.
-        # The normal full-frame pass remains the cheap/common path.
-        tw, th = max(160, int(w * 0.62)), max(160, int(h * 0.62))
-        xs = sorted({0, max(0, (w - tw) // 2), max(0, w - tw)})
-        ys = sorted({0, max(0, (h - th) // 2), max(0, h - th)})
+        # Two-by-two overlapping tiles. They are a fallback for small distant
+        # targets, not the default path, so normal webcam processing stays fast.
+        tw, th = max(160, int(w * 0.68)), max(160, int(h * 0.68))
+        xs = [0, max(0, w - tw)]
+        ys = [0, max(0, h - th)]
         out: list[Detection] = []
-        for y0 in ys:
-            for x0 in xs:
-                tile = frame[y0 : y0 + th, x0 : x0 + tw]
+        for y0 in sorted(set(ys)):
+            for x0 in sorted(set(xs)):
+                tile = frame[y0:y0 + th, x0:x0 + tw]
                 for d in self._predict_model(model, tile, confidence, 960):
                     x1, y1, x2, y2 = d.bbox
-                    out.append(
-                        Detection(
-                            label=d.label,
-                            confidence=d.confidence,
-                            bbox=(x1 + x0, y1 + y0, x2 + x0, y2 + y0),
-                        )
-                    )
+                    out.append(Detection(label=d.label, confidence=d.confidence,
+                                         bbox=(x1 + x0, y1 + y0, x2 + x0, y2 + y0)))
         return self._nms(out)
 
     def detect(self, frame: Any, camera_id: str | None = None) -> list[Detection]:
-        """Return classified flying objects without heuristic guesses.
+        """Classify airborne objects without heuristic guesses."""
+        del camera_id
 
-        Primary model: Javvanny YOLOv8m with Drone/Airplane/Helicopter/Bird.
-        Fallback model: AeroYOLO with aircraft/drone/helicopter.
-        """
-        del camera_id  # Reserved for future per-camera temporal fusion.
-
-        primary_loaded = False
+        # Primary model: Javvanny YOLOv8m. It explicitly distinguishes
+        # Drone/Airplane/Helicopter/Bird.
         try:
-            # A single full-frame pass is the normal path.  The model is run at
-            # a higher resolution than the source when needed, which is useful
-            # for small distant drones without forcing tiled inference every frame.
-            primary_loaded = True
             detections = self._predict(frame, imgsz=960)
             if detections:
                 return detections
-        except Exception:
-            logger.exception("Primary flying-object inference failed")
-
-        # Only spend the extra compute on tiles when the normal pass found no
-        # classified object. This keeps webcam/RTSP processing responsive.
-        if primary_loaded:
+            # Small-target rescue only after a clean full-frame miss.
             try:
                 tiled = self._tiled_predict(frame, use_fallback=False)
                 if tiled:
                     return tiled
             except Exception:
                 logger.exception("Primary tiled flying-object inference failed")
+            return []
+        except Exception:
+            logger.exception("Primary flying-object inference failed; using fallback")
 
-        # If the primary model is unavailable, use the smaller AeroYOLO model.
+        # Fallback: AeroYOLO distinguishes aircraft/drone/helicopter.
         try:
-            detections = self._predict_model(
-                self._load_fallback(),
-                frame,
-                self.fallback_confidence,
-                960,
-            )
+            detections = self._predict_model(self._load_fallback(), frame, self.fallback_confidence, 960)
             if detections:
                 return detections
-            try:
-                return self._tiled_predict(frame, use_fallback=True)
-            except Exception:
-                logger.exception("Fallback tiled flying-object inference failed")
+            return self._tiled_predict(frame, use_fallback=True)
         except Exception:
             logger.exception("Fallback flying-object inference failed")
-        return []
+            return []
 
     def status(self) -> dict[str, Any]:
         return {
@@ -239,9 +196,6 @@ class DroneDetector(Detector):
         detections = sorted(detections, key=lambda x: x.confidence, reverse=True)
         kept: list[Detection] = []
         for detection in detections:
-            if all(
-                detection.label != existing.label or self._iou(detection.bbox, existing.bbox) < 0.45
-                for existing in kept
-            ):
+            if all(detection.label != existing.label or self._iou(detection.bbox, existing.bbox) < .45 for existing in kept):
                 kept.append(detection)
         return kept
