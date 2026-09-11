@@ -60,19 +60,11 @@ class RuleEventEngine:
     def _new_event(self, camera_id, now, event_type, severity, confidence, risk, message,
                    object_type="person", track_id=None, zone=None, metadata=None):
         return EventRecord(
-            event_id=f"EVT-{uuid.uuid4().hex[:10].upper()}",
-            camera_id=camera_id,
-            timestamp=datetime.fromtimestamp(now, tz=timezone.utc),
-            event_type=event_type,
-            severity=severity,
-            confidence=confidence,
-            risk_score=min(max(risk, 0), 100),
-            object_type=object_type,
-            track_id=track_id,
-            zone_id=zone.zone_id if zone else None,
-            zone_name=zone.name if zone else None,
-            message=message,
-            metadata=metadata or {},
+            event_id=f"EVT-{uuid.uuid4().hex[:10].upper()}", camera_id=camera_id,
+            timestamp=datetime.fromtimestamp(now, tz=timezone.utc), event_type=event_type,
+            severity=severity, confidence=confidence, risk_score=min(max(risk, 0), 100),
+            object_type=object_type, track_id=track_id, zone_id=zone.zone_id if zone else None,
+            zone_name=zone.name if zone else None, message=message, metadata=metadata or {},
         )
 
     def _allow(self, key, now, cooldown=None):
@@ -91,12 +83,20 @@ class RuleEventEngine:
                 proximity = dist / max(ah, bh)
                 ma = self._movement_distance(self._history[(camera_id, a.track_id)])
                 mb = self._movement_distance(self._history[(camera_id, b.track_id)])
-                if proximity <= 1.8 and ma > 18 and mb > 18 and ma + mb > max(width, height) * .18 and self._allow((camera_id, "fight", min(a.track_id, b.track_id), max(a.track_id, b.track_id)), now, 18):
-                    conf = min(.95, .58 + .12 * min(1, ma / 70) + .12 * min(1, mb / 70) + .10 * max(0, 1 - proximity / 1.8))
+                # Walking/approaching people in a border scene should not be
+                # called a fight. Require very close proximity plus movement
+                # comparable to a body height for BOTH tracks and substantial
+                # movement in the short history window.
+                rapid_a = ma / ah
+                rapid_b = mb / bh
+                if (proximity <= 1.25 and rapid_a >= 1.05 and rapid_b >= 1.05
+                        and ma + mb > max(width, height) * .28
+                        and self._allow((camera_id, "fight", min(a.track_id, b.track_id), max(a.track_id, b.track_id)), now, 18)):
+                    conf = min(.95, .58 + .12 * min(1, ma / 90) + .12 * min(1, mb / 90) + .10 * max(0, 1 - proximity / 1.25))
                     events.append(self._new_event(
                         camera_id, now, "FIGHT_SUSPECTED", EventSeverity.HIGH, conf, 84,
                         "Potential physical altercation detected; operator review recommended", "person", a.track_id, None,
-                        {"factors": ["two people in close proximity", "rapid movement", "contextual anomaly"],
+                        {"factors": ["two people in very close proximity", "high relative movement", "contextual anomaly"],
                          "related_track_ids": [a.track_id, b.track_id], "proximity_ratio": round(proximity, 2),
                          "movement_a": round(ma, 1), "movement_b": round(mb, 1),
                          "note": "Anomaly cue only; operator review recommended."},
@@ -200,20 +200,17 @@ class RuleEventEngine:
         return out
 
     def evaluate_drones(self, camera_id, detections, zones, frame_shape, timestamp=None, scan_id=None):
-        """Alert only on a classified drone after two specialist scans."""
         now = timestamp or time.time()
         if scan_id is not None and self._last_drone_scan.get(camera_id) == scan_id:
             return []
         if scan_id is not None:
             self._last_drone_scan[camera_id] = scan_id
-
         height, width = frame_shape[:2]
         drones = [d for d in detections if d.label.strip().lower() == "drone"]
         if not drones:
             self._drone_confirmation[camera_id].clear()
             self._drone_tracks[camera_id] = {}
             return []
-
         restricted = next((z for z in zones if z.enabled and z.camera_id == camera_id and z.zone_type.value == "RESTRICTED"), None)
         events = []
         current_confirmation = {}
