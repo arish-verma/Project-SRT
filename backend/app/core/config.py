@@ -16,10 +16,11 @@ class Settings(BaseSettings):
     # Unified aerial-object detection is intentionally less frequent than the base detector
     # because the specialist models are substantially heavier. Results are held on screen.
     drone_model_path: str = "QuincySorrentino/AeroYOLO"
-    drone_model_confidence: float = 0.20
+    drone_model_confidence: float = 0.10
     drone_fallback_model_path: str = "sapoepsilon/yolov11s-drone-detector"
-    drone_fallback_confidence: float = 0.12
-    drone_scan_interval: int = 10
+    drone_fallback_confidence: float = 0.08
+    # About 4-5 aerial scans/sec on a 24 FPS source while keeping the specialist off every frame.
+    drone_scan_interval: int = 6
     # OCR is CPU-heavy. Vehicle classification remains live, while OCR is sampled and cached.
     anpr_scan_interval: int = 30
     face_scan_interval: int = 15
