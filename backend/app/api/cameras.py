@@ -14,9 +14,16 @@ def list_cameras() -> list[Camera]:
 @router.post("", response_model=Camera, status_code=status.HTTP_201_CREATED)
 def create_camera(data: CameraCreate) -> Camera:
     try:
-        return camera_manager.create(data)
+        camera = camera_manager.create(data)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # Adding a source is an explicit operator action, so begin processing
+    # immediately. The processor publishes the first frame before expensive AI
+    # inference, making upload/local video sources feel instant in the UI.
+    if camera.enabled:
+        video_processor.start(camera.camera_id)
+    return camera_manager.get(camera.camera_id)
 
 
 @router.get("/{camera_id}", response_model=Camera)
