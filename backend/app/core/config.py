@@ -10,26 +10,22 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://srt:srt@localhost:5432/srt"
     redis_url: str = "redis://localhost:6379/0"
 
-    # General CCTV detector. It handles people, vehicles and the rest of the
-    # normal COCO classes; flying-object classification is kept separate.
     model_path: str = "yolo11n.pt"
     model_confidence: float = 0.35
     detection_interval: int = 2
 
-    # Specialist flying-object model. One consistent model is used for all
-    # airborne classes; mixing different class vocabularies caused instability.
+    # One consistent specialist model for airborne-object detection.
     drone_model_path: str = "Javvanny/yolov8m_flying_objects_detection"
     drone_model_file: str = "yolov8m/weights/best.pt"
     drone_model_confidence: float = 0.45
 
-    # Retained as configuration compatibility fields; the fallback model is no
-    # longer mixed into live classification because it caused label oscillation.
+    # Compatibility fields only. The fallback model is not mixed into live
+    # inference because differing class vocabularies caused class oscillation.
     drone_fallback_model_path: str = "QuincySorrentino/AeroYOLO"
     drone_fallback_model_file: str = "best.pt"
     drone_fallback_confidence: float = 0.20
 
-    # Precision-first airborne inference. A result must agree over multiple
-    # specialist scans before it is shown as a live flying-object detection.
+    # Precision-first airborne inference.
     drone_scan_interval: int = 5
     drone_tiled_scan_every: int = 1
     drone_min_confidence: float = 0.55
@@ -37,12 +33,24 @@ class Settings(BaseSettings):
     helicopter_min_confidence: float = 0.60
     bird_min_confidence: float = 0.68
     flying_model_imgsz: int = 960
+
+    # Reject implausible/background candidates before temporal voting.
     flying_min_box_px: int = 10
-    flying_max_box_area_ratio: float = 0.12
-    flying_max_center_y_ratio: float = 0.90
-    flying_match_iou: float = 0.25
-    flying_vote_window: int = 5
+    flying_max_box_area_ratio: float = 0.06
+    flying_max_center_y_ratio: float = 0.82
+
+    # Temporal object lock: a class must agree across multiple specialist
+    # scans and the same physical region must persist between scans.
+    flying_match_iou: float = 0.15
+    flying_vote_window: int = 6
     flying_required_votes: int = 3
+    flying_label_consensus_ratio: float = 0.67
+
+    # Normal moving airborne targets need measurable displacement. Stationary
+    # hover is allowed only after a longer, high-confidence confirmation.
+    flying_min_motion_ratio: float = 0.008
+    flying_hover_confidence: float = 0.82
+    flying_hover_required_votes: int = 5
     flying_clear_after_misses: int = 2
 
     anpr_scan_interval: int = 30
