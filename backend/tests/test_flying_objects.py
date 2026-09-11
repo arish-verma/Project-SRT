@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from app.ai.detection.drone import DroneDetector
 from app.ai.interfaces import Detection
 from app.services.event_engine import RuleEventEngine
@@ -10,6 +12,68 @@ def test_flying_model_label_normalization():
     assert DroneDetector._canonical_label("Helicopter") == "helicopter"
     assert DroneDetector._canonical_label("Bird") == "bird"
     assert DroneDetector._canonical_label("person") is None
+
+
+def test_flying_detector_does_not_expose_single_frame_candidate():
+    detector = DroneDetector("unused", confidence=.25)
+    candidate = Detection(label="helicopter", confidence=.90, bbox=(120, 60, 180, 110))
+    detector._predict = lambda frame: [candidate]
+    frame = SimpleNamespace(shape=(360, 360, 3))
+
+    assert detector.detect(frame, camera_id="CAM-1") == []
+
+
+def test_flying_detector_locks_persistent_moving_class():
+    detector = DroneDetector("unused", confidence=.25)
+    boxes = [
+        (80, 55, 135, 100),
+        (92, 58, 147, 103),
+        (106, 62, 161, 107),
+    ]
+    detections = [Detection(label="helicopter", confidence=.80, bbox=b) for b in boxes]
+    index = {"value": 0}
+
+    def predict(frame):
+        value = detections[min(index["value"], len(detections) - 1)]
+        index["value"] += 1
+        return [value]
+
+    detector._predict = predict
+    frame = SimpleNamespace(shape=(360, 360, 3))
+
+    assert detector.detect(frame, camera_id="CAM-1") == []
+    assert detector.detect(frame, camera_id="CAM-1") == []
+    locked = detector.detect(frame, camera_id="CAM-1")
+
+    assert len(locked) == 1
+    assert locked[0].label == "helicopter"
+
+
+def test_flying_detector_resists_one_frame_class_flip():
+    detector = DroneDetector("unused", confidence=.25)
+    sequence = [
+        Detection(label="helicopter", confidence=.80, bbox=(80, 55, 135, 100)),
+        Detection(label="helicopter", confidence=.82, bbox=(92, 58, 147, 103)),
+        Detection(label="helicopter", confidence=.84, bbox=(106, 62, 161, 107)),
+        Detection(label="airplane", confidence=.95, bbox=(118, 65, 173, 110)),
+    ]
+    index = {"value": 0}
+
+    def predict(frame):
+        value = sequence[min(index["value"], len(sequence) - 1)]
+        index["value"] += 1
+        return [value]
+
+    detector._predict = predict
+    frame = SimpleNamespace(shape=(360, 360, 3))
+
+    detector.detect(frame, camera_id="CAM-2")
+    detector.detect(frame, camera_id="CAM-2")
+    locked = detector.detect(frame, camera_id="CAM-2")
+    assert locked and locked[0].label == "helicopter"
+
+    after_flip = detector.detect(frame, camera_id="CAM-2")
+    assert after_flip and after_flip[0].label == "helicopter"
 
 
 def test_only_drone_generates_drone_alert():
