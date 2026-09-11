@@ -59,11 +59,10 @@ class AnalyticsPipeline:
                     self._last_drone_error_log = now
 
         annotated = frame.copy()
-        # General YOLO owns ground/object labels. Aerial labels are intentionally
-        # suppressed here because the specialist model is the authority for
-        # aircraft/drone/helicopter classification. This prevents a generic
-        # COCO "airplane" result from leaking into the operator display.
         aerial_labels = {"airplane", "aircraft", "helicopter"}
+        # General YOLO owns ground/object labels. Aerial labels are intentionally
+        # suppressed because the specialist model is the authority for aerial
+        # classification.
         for d in detections:
             if d.label.lower() in aerial_labels:
                 continue
@@ -71,12 +70,20 @@ class AnalyticsPipeline:
             cv2.rectangle(annotated, (x1, y1), (x2, y2), (255, 255, 255), 2)
             cv2.putText(annotated, f"{d.label} {d.confidence:.0%}", (x1, max(18, y1 - 6)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+
+        # Specialist aerial detections are the only aerial boxes shown to the operator.
         for d in self.last_drone_detections:
             x1, y1, x2, y2 = map(int, d.bbox)
             cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), 2)
             cv2.putText(annotated, f"DRONE {d.confidence:.0%}", (x1, max(18, y1 - 6)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2, cv2.LINE_AA)
+
+        # Do not draw tracker IDs for generic aerial detections. Otherwise the UI
+        # can show only '#15' when the general model sees an airplane but the
+        # specialist has not yet classified it as a drone.
         for t in tracks:
+            if t.label.lower() in aerial_labels:
+                continue
             x1, y1, x2, y2 = map(int, t.bbox)
             cv2.putText(annotated, f"#{t.track_id}", (x1, min(annotated.shape[0] - 5, y2 + 18)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
