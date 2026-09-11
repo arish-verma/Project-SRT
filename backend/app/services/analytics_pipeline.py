@@ -22,10 +22,10 @@ logger = logging.getLogger(__name__)
 class AnalyticsPipeline:
     """Real-time perception pipeline with non-blocking specialist inference.
 
-    Frame capture/display is intentionally independent from expensive model
-    inference. The browser always receives the newest frame, while inference
-    workers update the annotations asynchronously. This prevents a slow model
-    load, ANPR OCR pass, face scan, or flying-object scan from freezing video.
+    Capture/display is independent from expensive AI inference. The latest raw
+    frame is retained so an inference result can immediately repaint that same
+    live frame; this is essential for short uploaded clips where inference may
+    finish after the capture loop has already advanced several frames.
     """
 
     def __init__(self, frame_store: FrameStore, model_path: str = "yolo11n.pt", confidence: float = 0.35) -> None:
@@ -35,9 +35,6 @@ class AnalyticsPipeline:
         self.detector = YOLODetector(model_path, confidence)
         self._trackers: dict[str, ByteTrackTracker] = {}
         self._tracker_lock = threading.RLock()
-
-        # Separate workers keep the live path responsive. Each expensive model
-        # gets one worker, preventing duplicate inference on the same model.
         self._base_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="srt-base-ai")
         self._flying_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="srt-flying-ai")
         self._aux_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="srt-aux-ai")
@@ -46,6 +43,7 @@ class AnalyticsPipeline:
         self._flying_busy: set[str] = set()
         self._anpr_busy: set[str] = set()
         self._face_busy: set[str] = set()
+        self._latest_frames: dict[str, tuple[Any, int, float]] = {}
 
         self.drone_detector = DroneDetector(settings.drone_model_path, settings.drone_model_confidence)
         self.drone_scan_interval = max(1, settings.drone_scan_interval)
@@ -109,30 +107,12 @@ class AnalyticsPipeline:
                 continue
             x1, y1, x2, y2 = map(int, detection.bbox)
             cv2.rectangle(annotated, (x1, y1), (x2, y2), (255, 255, 255), 2)
-            cv2.putText(
-                annotated,
-                f"{detection.label} {detection.confidence:.0%}",
-                (x1, max(18, y1 - 6)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                .5,
-                (255, 255, 255),
-                1,
-                cv2.LINE_AA,
-            )
+            cv2.putText(annotated, f"{detection.label} {detection.confidence:.0%}", (x1, max(18, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, .5, (255, 255, 255), 1, cv2.LINE_AA)
         for track in tracks:
             if track.label.lower() in FLYING_LABELS:
                 continue
             x1, y1, x2, y2 = map(int, track.bbox)
-            cv2.putText(
-                annotated,
-                f"#{track.track_id}",
-                (x1, min(annotated.shape[0] - 5, y2 + 18)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                .55,
-                (255, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
+            cv2.putText(annotated, f"#{track.track_id}", (x1, min(annotated.shape[0] - 5, y2 + 18)), cv2.FONT_HERSHEY_SIMPLEX, .55, (255, 255, 255), 2, cv2.LINE_AA)
         for x, y, w, h in self.last_faces.get(camera_id, []):
             cv2.rectangle(annotated, (x, y), (x + w, y + h), (255, 180, 0), 2)
             cv2.putText(annotated, "FACE", (x, max(16, y - 5)), cv2.FONT_HERSHEY_SIMPLEX, .45, (255, 180, 0), 1, cv2.LINE_AA)
@@ -145,28 +125,19 @@ class AnalyticsPipeline:
         for detection in self.last_flying_detections.get(camera_id, []):
             x1, y1, x2, y2 = map(int, detection.bbox)
             cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), 2)
-            cv2.putText(
-                annotated,
-                f"{detection.label.upper()} {detection.confidence:.0%}",
-                (x1, max(18, y1 - 6)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                .55,
-                (0, 0, 255),
-                2,
-                cv2.LINE_AA,
-            )
+            cv2.putText(annotated, f"{detection.label.upper()} {detection.confidence:.0%}", (x1, max(18, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, .55, (0, 0, 255), 2, cv2.LINE_AA)
         ok, encoded = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 76])
         if ok:
-            self.frame_store.put(
-                camera_id,
-                FrameSnapshot(
-                    jpeg=encoded.tobytes(),
-                    frame_index=frame_index,
-                    timestamp=timestamp,
-                    detections=len(detections),
-                    tracks=len(tracks),
-                ),
-            )
+            self.frame_store.put(camera_id, FrameSnapshot(jpeg=encoded.tobytes(), frame_index=frame_index, timestamp=timestamp, detections=len(detections), tracks=len(tracks)))
+
+    def _republish_latest(self, camera_id: str) -> None:
+        with self._state_lock:
+            latest = self._latest_frames.get(camera_id)
+            detections = list(self.last_detections.get(camera_id, []))
+            tracks = list(self.last_tracks.get(camera_id, []))
+        if latest is not None:
+            frame, frame_index, timestamp = latest
+            self._annotate_and_store(camera_id, frame, frame_index, timestamp, detections, tracks)
 
     def _run_base_inference(self, camera_id: str, frame: Any) -> None:
         try:
@@ -175,6 +146,7 @@ class AnalyticsPipeline:
             with self._state_lock:
                 self.last_detections[camera_id] = detections
                 self.last_tracks[camera_id] = tracks
+            self._republish_latest(camera_id)
         except Exception:
             logger.exception("Analytics inference failed for %s", camera_id)
         finally:
@@ -195,11 +167,13 @@ class AnalyticsPipeline:
             with self._state_lock:
                 self.last_flying_detections[camera_id] = flying
                 self.last_flying_scan_frame[camera_id] = scan_frame
+            self._republish_latest(camera_id)
         except Exception:
             logger.exception("Flying-object inference failed for %s", camera_id)
             with self._state_lock:
                 self.last_flying_detections[camera_id] = []
                 self.last_flying_scan_frame[camera_id] = scan_frame
+            self._republish_latest(camera_id)
         finally:
             with self._state_lock:
                 self._flying_busy.discard(camera_id)
@@ -217,6 +191,7 @@ class AnalyticsPipeline:
         try:
             result = self.anpr.scan(frame, detections, camera_id=camera_id, timestamp=timestamp)
             self.last_anpr[camera_id] = self._merge_anpr(camera_id, result)
+            self._republish_latest(camera_id)
         except Exception:
             logger.exception("ANPR failed for %s", camera_id)
         finally:
@@ -233,6 +208,7 @@ class AnalyticsPipeline:
     def _run_face(self, camera_id: str, frame: Any) -> None:
         try:
             self.last_faces[camera_id] = self.face_service.detect(frame)
+            self._republish_latest(camera_id)
         except Exception:
             logger.exception("Face detection failed for %s", camera_id)
             self.last_faces[camera_id] = []
@@ -249,31 +225,24 @@ class AnalyticsPipeline:
 
     def process(self, camera_id: str, packet: Any):
         frame = packet.frame
-        detections = self.last_detections.get(camera_id, [])
-        tracks = self.last_tracks.get(camera_id, [])
+        with self._state_lock:
+            self._latest_frames[camera_id] = (frame.copy(), packet.frame_index, packet.timestamp)
+            detections = list(self.last_detections.get(camera_id, []))
+            tracks = list(self.last_tracks.get(camera_id, []))
 
-        # Publish immediately using the latest known AI state. This guarantees
-        # the first frame is visible even while models are lazily loading.
         self._annotate_and_store(camera_id, frame, packet.frame_index, packet.timestamp, detections, tracks)
 
-        # Base perception runs asynchronously; stale work is never allowed to
-        # block capture or browser playback.
         if packet.frame_index % self.detection_interval == 0:
             self._schedule_base(camera_id, frame)
-
         if packet.frame_index % self.anpr_scan_interval == 0:
             self._schedule_anpr(camera_id, frame, detections, packet.timestamp)
-
         if packet.frame_index % self.face_scan_interval == 0:
             self._schedule_face(camera_id, frame)
-
         if self.drone_enabled and packet.frame_index % self.drone_scan_interval == 0:
             self._schedule_flying(camera_id, frame, packet.frame_index)
-
         return detections, tracks
 
     def shutdown(self) -> None:
-        """Stop background inference workers during application shutdown."""
         for executor in (self._base_executor, self._flying_executor, self._aux_executor):
             executor.shutdown(wait=False, cancel_futures=True)
 
