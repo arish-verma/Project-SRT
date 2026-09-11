@@ -12,13 +12,11 @@ FLYING_LABELS = {"drone", "airplane", "helicopter", "bird"}
 
 
 class DroneDetector(Detector):
-    """Precision-first airborne detector with temporal object locking.
+    """Airborne-object detector with temporal confirmation for alerts.
 
-    The model is treated as a candidate generator, not as an authority. A
-    candidate must survive confidence, geometry, temporal persistence, class
-    consensus and motion/hover gates before it is rendered as a live airborne
-    object. This prevents isolated background hallucinations and frame-to-frame
-    helicopter/airplane/drone label flicker.
+    Current specialist detections are returned immediately so uploaded/live video
+    visibly shows the classified airborne target. Temporal persistence is kept for
+    the alert layer instead of incorrectly hiding valid one-frame classifications.
     """
 
     def __init__(self, model_path: str, confidence: float = 0.20) -> None:
@@ -68,7 +66,6 @@ class DroneDetector(Detector):
                 weights = self.model_path
             else:
                 from huggingface_hub import hf_hub_download
-
                 weights = hf_hub_download(repo_id=self.model_path, filename=self.model_file)
             model = YOLO(weights)
             model.to(self._device)
@@ -129,10 +126,6 @@ class DroneDetector(Detector):
             bw, bh = x2 - x1, y2 - y1
             area_ratio = max(0.0, bw * bh) / frame_area
             center_y = ((y1 + y2) / 2.0) / max(1, h)
-
-            # Background/ground-scene precision gates. Border-camera aerial
-            # targets are expected in the upper portion of the image and should
-            # not consume a large fraction of the frame.
             if bw < settings.flying_min_box_px or bh < settings.flying_min_box_px:
                 continue
             if area_ratio > settings.flying_max_box_area_ratio:
@@ -143,15 +136,10 @@ class DroneDetector(Detector):
         return self._nms(out)
 
     def _matching_history(self, camera_id: str, current: Detection) -> list[tuple[int, Detection]]:
-        """Return at most one best match from each historical scan."""
         matches: list[tuple[int, Detection]] = []
         history = self._history[camera_id]
         for scan_index, scan in enumerate(history):
-            best = max(
-                scan,
-                key=lambda item: self._iou(current.bbox, item.bbox),
-                default=None,
-            )
+            best = max(scan, key=lambda item: self._iou(current.bbox, item.bbox), default=None)
             if best is not None:
                 iou = self._iou(current.bbox, best.bbox)
                 if iou >= settings.flying_match_iou:
@@ -178,14 +166,10 @@ class DroneDetector(Detector):
             matches = self._matching_history(camera_id, current)
             if len(matches) < settings.flying_required_votes:
                 continue
-
             label_scans: dict[str, list[Detection]] = defaultdict(list)
             for _, item in matches:
                 label_scans[item.label].append(item)
-            label, votes = max(
-                label_scans.items(),
-                key=lambda item: (len(item[1]), sum(d.confidence for d in item[1])),
-            )
+            label, votes = max(label_scans.items(), key=lambda item: (len(item[1]), sum(d.confidence for d in item[1])))
             total_votes = len(matches)
             consensus = len(votes) / max(1, total_votes)
             if len(votes) < settings.flying_required_votes or consensus < settings.flying_label_consensus_ratio:
@@ -197,34 +181,11 @@ class DroneDetector(Detector):
                 first_x, first_y = centers[0]
                 last_x, last_y = centers[-1]
                 displacement = ((last_x - first_x) ** 2 + (last_y - first_y) ** 2) ** 0.5
-
             avg_conf = sum(d.confidence for d in votes) / len(votes)
             moving_enough = displacement >= min_motion
-            stable_hover = (
-                len(votes) >= settings.flying_hover_required_votes
-                and avg_conf >= settings.flying_hover_confidence
-            )
+            stable_hover = len(votes) >= settings.flying_hover_required_votes and avg_conf >= settings.flying_hover_confidence
             if not moving_enough and not stable_hover:
                 continue
-
-            # Once locked, a contrary single-frame class cannot replace it.
-            # A replacement needs the same consensus requirement.
-            previous = max(
-                (
-                    d
-                    for d in self._stable.get(camera_id, [])
-                    if self._iou(current.bbox, d.bbox) >= settings.flying_match_iou
-                ),
-                key=lambda d: d.confidence,
-                default=None,
-            )
-            if previous is not None and previous.label != label:
-                old_votes = len(label_scans.get(previous.label, []))
-                if old_votes >= settings.flying_required_votes and old_votes / max(1, total_votes) >= settings.flying_label_consensus_ratio:
-                    label = previous.label
-                    votes = label_scans[previous.label]
-                    avg_conf = sum(d.confidence for d in votes) / len(votes)
-
             stable.append(Detection(label=label, confidence=avg_conf, bbox=current.bbox))
 
         self._stable[camera_id] = self._nms(stable)
@@ -238,7 +199,10 @@ class DroneDetector(Detector):
         except Exception:
             logger.exception("Flying-object inference failed for %s", key)
             raw = []
-        return self._stable_result(key, raw, frame.shape)
+        confirmed = self._stable_result(key, raw, frame.shape)
+        # Rendering uses the current specialist result immediately. The confirmed
+        # result remains available for future alert/temporal logic.
+        return raw if raw else confirmed
 
     def status(self) -> dict[str, Any]:
         return {
