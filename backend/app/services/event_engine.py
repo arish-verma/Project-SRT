@@ -28,8 +28,7 @@ class RuleEventEngine:
     def _contains_point(zone, x, y, width, height):
         return cv2.pointPolygonTest(
             __import__("numpy").array([(px * width, py * height) for px, py in zone.polygon], dtype="float32"),
-            (float(x), float(y)),
-            False,
+            (float(x), float(y)), False,
         ) >= 0
 
     @staticmethod
@@ -74,31 +73,61 @@ class RuleEventEngine:
         return True
 
     def _fight_events(self, camera_id, persons, now, width, height):
+        """Detect sustained close-range two-person physical altercation cues.
+
+        This remains a rule-based operator-assistance signal, but it uses relative
+        motion over the tracking history rather than requiring unrealistically large
+        absolute movement. That makes short uploaded fight clips detectable while
+        retaining proximity + bilateral-motion gates to reduce normal walking hits.
+        """
         events = []
         for i, a in enumerate(persons):
-            for b in persons[i + 1 :]:
+            for b in persons[i + 1:]:
                 dist = math.hypot(a.center[0] - b.center[0], a.center[1] - b.center[1])
                 ah = max(10.0, a.bbox[3] - a.bbox[1])
                 bh = max(10.0, b.bbox[3] - b.bbox[1])
-                proximity = dist / max(ah, bh)
-                ma = self._movement_distance(self._history[(camera_id, a.track_id)])
-                mb = self._movement_distance(self._history[(camera_id, b.track_id)])
-                # Walking/approaching people in a border scene should not be
-                # called a fight. Require very close proximity plus movement
-                # comparable to a body height for BOTH tracks and substantial
-                # movement in the short history window.
+                body = max(ah, bh)
+                proximity = dist / body
+                ha = self._history[(camera_id, a.track_id)]
+                hb = self._history[(camera_id, b.track_id)]
+                ma = self._movement_distance(ha)
+                mb = self._movement_distance(hb)
                 rapid_a = ma / ah
                 rapid_b = mb / bh
-                if (proximity <= 1.25 and rapid_a >= 1.05 and rapid_b >= 1.05
-                        and ma + mb > max(width, height) * .28
+
+                # Relative motion is more useful for a fight than raw camera
+                # displacement. Measure the change in separation across history.
+                relative_motion = 0.0
+                if len(ha) >= 3 and len(hb) >= 3:
+                    samples = min(len(ha), len(hb), 8)
+                    pa = ha[-samples:]
+                    pb = hb[-samples:]
+                    separations = [math.hypot(xa - xb, ya - yb) for (_, xa, ya), (_, xb, yb) in zip(pa, pb)]
+                    if len(separations) >= 2:
+                        relative_motion = sum(abs(separations[j] - separations[j - 1]) for j in range(1, len(separations)))
+
+                close = proximity <= 1.55
+                bilateral_motion = rapid_a >= 0.32 and rapid_b >= 0.32
+                substantial_motion = ma + mb >= max(width, height) * 0.08
+                interaction_motion = relative_motion >= body * 0.25
+
+                if (close and bilateral_motion and substantial_motion and interaction_motion
                         and self._allow((camera_id, "fight", min(a.track_id, b.track_id), max(a.track_id, b.track_id)), now, 18)):
-                    conf = min(.95, .58 + .12 * min(1, ma / 90) + .12 * min(1, mb / 90) + .10 * max(0, 1 - proximity / 1.25))
+                    conf = min(
+                        .96,
+                        .58
+                        + .10 * min(1, rapid_a / 1.5)
+                        + .10 * min(1, rapid_b / 1.5)
+                        + .10 * max(0, 1 - proximity / 1.55)
+                        + .08 * min(1, relative_motion / max(body, 1)),
+                    )
                     events.append(self._new_event(
                         camera_id, now, "FIGHT_SUSPECTED", EventSeverity.HIGH, conf, 84,
                         "Potential physical altercation detected; operator review recommended", "person", a.track_id, None,
-                        {"factors": ["two people in very close proximity", "high relative movement", "contextual anomaly"],
+                        {"factors": ["two people in close proximity", "bilateral rapid movement", "relative interaction motion"],
                          "related_track_ids": [a.track_id, b.track_id], "proximity_ratio": round(proximity, 2),
                          "movement_a": round(ma, 1), "movement_b": round(mb, 1),
+                         "relative_motion": round(relative_motion, 1),
                          "note": "Anomaly cue only; operator review recommended."},
                     ))
         return events
