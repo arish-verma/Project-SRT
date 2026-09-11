@@ -16,14 +16,43 @@ from app.api.zones import router as zones_router
 from app.core.config import settings
 from app.core.logging import configure_logging
 from app.services.runtime import video_processor
+
 configure_logging(settings.log_level)
+
+
 @asynccontextmanager
-async def lifespan(app:FastAPI):
+async def lifespan(app: FastAPI):
     yield
     video_processor.stop_all()
-app=FastAPI(title=settings.app_name,version=settings.app_version,lifespan=lifespan)
-app.add_middleware(CORSMiddleware,allow_origins=[x.strip() for x in settings.cors_origins.split(",") if x.strip()],allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
-for router in (system_router,cameras_router,streams_router,zones_router,events_router,search_router,uploads_router,alerts_router,analytics_router,faces_router,anpr_router): app.include_router(router,prefix=settings.api_prefix)
+    video_processor.pipeline.shutdown()
+
+
+app = FastAPI(title=settings.app_name, version=settings.app_version, lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[x.strip() for x in settings.cors_origins.split(",") if x.strip()],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+for router in (
+    system_router,
+    cameras_router,
+    streams_router,
+    zones_router,
+    events_router,
+    search_router,
+    uploads_router,
+    alerts_router,
+    analytics_router,
+    faces_router,
+    anpr_router,
+):
+    app.include_router(router, prefix=settings.api_prefix)
 app.include_router(realtime_router)
+
+
 @app.get("/")
-def root()->dict[str,str]: return {"name":settings.app_name,"service":settings.app_name,"status":"running","docs":"/docs"}
+def root() -> dict[str, str]:
+    return {"name": settings.app_name, "service": settings.app_name, "status": "running", "docs": "/docs"}
