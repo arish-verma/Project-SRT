@@ -24,24 +24,16 @@ class AlertStore:
             row = db.execute("SELECT * FROM alerts WHERE event_id=?", (event.event_id,)).fetchone()
             if row:
                 return self._row(row)
-            titles = {
-                "INTRUSION": "Restricted Border Entered",
-                "NIGHT_MOVEMENT": "Night Movement Detected",
-                "LOITERING": "Loitering Detected",
-                "MULTI_PERSON_ACTIVITY": "Multiple-Person Activity Detected",
-                "ANOMALY_SUSPECTED": "Anomaly Detected",
-                "FIGHT_SUSPECTED": "Potential Physical Altercation",
-                "AERIAL_OBJECT_DETECTED": "Aerial Object Detected",
-                "DRONE_DETECTED": "DRONE DETECTED",
-                "ANPR_DETECTED": "ANPR Vehicle Detected",
-            }
+            # Alert title is intentionally derived from the event type so the
+            # alert and event can never describe different incidents.
+            title = event.event_type.replace("_", " ").upper()
             alert = AlertRecord(
                 alert_id=f"ALT-{uuid4().hex[:10].upper()}",
                 event_id=event.event_id,
                 camera_id=event.camera_id,
                 created_at=datetime.now(timezone.utc),
                 severity=event.severity,
-                title=titles.get(event.event_type, f"{event.event_type.replace('_', ' ').title()} Detected"),
+                title=title,
                 message=event.message,
             )
             db.execute(
@@ -82,6 +74,10 @@ class AlertStore:
                 return False
             db.execute("DELETE FROM alerts WHERE alert_id=?", (alert_id,))
             return True
+
+    def delete_for_event(self, event_id):
+        with self.lock, sqlite3.connect(self.path) as db:
+            db.execute("DELETE FROM alerts WHERE event_id=?", (event_id,))
 
     def clear(self):
         with self.lock, sqlite3.connect(self.path) as db:
